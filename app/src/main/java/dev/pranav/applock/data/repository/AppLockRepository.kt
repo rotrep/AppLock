@@ -12,6 +12,7 @@ class AppLockRepository(private val context: Context) {
     private val preferencesRepository = PreferencesRepository(context)
     private val lockedAppsRepository = LockedAppsRepository(context)
     private val backendServiceManager = BackendServiceManager()
+    private val appUsagePolicyRepository = AppUsagePolicyRepository(context)
 
     fun getLockedApps(): Set<String> = lockedAppsRepository.getLockedApps()
     fun addLockedApp(packageName: String) = lockedAppsRepository.addLockedApp(packageName)
@@ -39,6 +40,17 @@ class AppLockRepository(private val context: Context) {
 
     fun isAppAntiUninstall(packageName: String): Boolean =
         lockedAppsRepository.isAppAntiUninstall(packageName)
+
+
+    fun getAppUsagePolicy(packageName: String): AppUsagePolicy? = appUsagePolicyRepository.getPolicy(packageName)
+    fun setAppUsagePolicy(policy: AppUsagePolicy) = appUsagePolicyRepository.setPolicy(policy)
+    fun clearAppUsagePolicy(packageName: String) = appUsagePolicyRepository.clearPolicy(packageName)
+    fun copyUsagePolicyToDays(packageName: String, sourceDay: java.time.DayOfWeek, targetDays: Set<java.time.DayOfWeek>) =
+        appUsagePolicyRepository.copyConfigToDays(packageName, sourceDay, targetDays)
+    fun canUseAppNow(packageName: String, nowMillis: Long = System.currentTimeMillis()): Boolean =
+        appUsagePolicyRepository.canUseAppNow(packageName, nowMillis)
+    fun consumeAppUsage(packageName: String, startMillis: Long, endMillis: Long): List<UsageAlert> =
+        appUsagePolicyRepository.consumeUsage(packageName, startMillis, endMillis)
 
     fun getPassword(): String? = preferencesRepository.getPassword()
     fun setPassword(password: String) = preferencesRepository.setPassword(password)

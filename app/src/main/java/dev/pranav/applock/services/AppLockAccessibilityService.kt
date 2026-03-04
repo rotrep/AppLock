@@ -3,6 +3,8 @@ package dev.pranav.applock.services
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.annotation.SuppressLint
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.admin.DevicePolicyManager
 import android.content.ComponentName
 import android.content.Intent
@@ -13,13 +15,17 @@ import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.Toast
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.getSystemService
+import dev.pranav.applock.R
 import dev.pranav.applock.core.broadcast.DeviceAdmin
 import dev.pranav.applock.core.utils.LogUtils
 import dev.pranav.applock.core.utils.appLockRepository
 import dev.pranav.applock.core.utils.enableAccessibilityServiceWithShizuku
 import dev.pranav.applock.data.repository.AppLockRepository
 import dev.pranav.applock.data.repository.BackendImplementation
+import dev.pranav.applock.data.repository.UsageAlert
 import dev.pranav.applock.features.lockscreen.ui.PasswordOverlayActivity
 import dev.pranav.applock.services.AppLockConstants.ACCESSIBILITY_SETTINGS_CLASSES
 import dev.pranav.applock.services.AppLockConstants.EXCLUDED_APPS
@@ -32,6 +38,8 @@ class AppLockAccessibilityService : AccessibilityService() {
 
     private var recentsOpen = false
     private var lastForegroundPackage = ""
+    private var activeUsagePackage = ""
+    private var activeUsageStartMillis = 0L
 
     enum class BiometricState {
         IDLE, AUTH_STARTED
@@ -41,6 +49,7 @@ class AppLockAccessibilityService : AccessibilityService() {
         private const val TAG = "AppLockAccessibility"
         private const val DEVICE_ADMIN_SETTINGS_PACKAGE = "com.android.settings"
         private const val APP_PACKAGE_PREFIX = "dev.pranav.applock"
+        private const val USAGE_ALERT_CHANNEL_ID = "usage_alerts"
 
         @Volatile
         var isServiceRunning = false
@@ -69,6 +78,7 @@ class AppLockAccessibilityService : AccessibilityService() {
             AppLockManager.currentBiometricState = BiometricState.IDLE
             AppLockManager.isLockScreenShown.set(false)
             startPrimaryBackendService()
+            createUsageAlertChannel()
 
             val filter = android.content.IntentFilter().apply {
                 addAction(Intent.ACTION_SCREEN_OFF)
@@ -245,6 +255,7 @@ class AppLockAccessibilityService : AccessibilityService() {
     private fun processPackageLocking(packageName: String) {
         val currentForegroundPackage = packageName
         val triggeringPackage = lastForegroundPackage
+        flushUsageIfPackageChanged(currentForegroundPackage)
         lastForegroundPackage = currentForegroundPackage
 
         // Skip if triggering package is excluded
@@ -292,6 +303,11 @@ class AppLockAccessibilityService : AccessibilityService() {
 
         // Return if package is not locked
         if (packageName !in appLockRepository.getLockedApps()) {
+            return
+        }
+
+        // Allow app when schedule/time policy still has available time
+        if (appLockRepository.canUseAppNow(packageName, currentTime)) {
             return
         }
 
@@ -533,6 +549,69 @@ class AppLockAccessibilityService : AccessibilityService() {
         }
     }
 
+    private fun flushUsageIfPackageChanged(newPackage: String) {
+        val now = System.currentTimeMillis()
+        if (activeUsagePackage.isNotBlank() && activeUsagePackage != newPackage && activeUsageStartMillis > 0L) {
+            notifyUsageAlerts(appLockRepository.consumeAppUsage(activeUsagePackage, activeUsageStartMillis, now))
+            activeUsageStartMillis = now
+            activeUsagePackage = newPackage
+            return
+        }
+
+        if (activeUsagePackage.isBlank()) {
+            activeUsagePackage = newPackage
+            activeUsageStartMillis = now
+        }
+    }
+
+    private fun flushActiveUsage() {
+        val now = System.currentTimeMillis()
+        if (activeUsagePackage.isNotBlank() && activeUsageStartMillis > 0L) {
+            notifyUsageAlerts(appLockRepository.consumeAppUsage(activeUsagePackage, activeUsageStartMillis, now))
+        }
+        activeUsagePackage = ""
+        activeUsageStartMillis = 0L
+    }
+
+    private fun createUsageAlertChannel() {
+        val manager = getSystemService(NotificationManager::class.java) ?: return
+        val channel = NotificationChannel(
+            USAGE_ALERT_CHANNEL_ID,
+            "App usage alerts",
+            NotificationManager.IMPORTANCE_DEFAULT
+        )
+        manager.createNotificationChannel(channel)
+    }
+
+    private fun notifyUsageAlerts(alerts: List<UsageAlert>) {
+        if (alerts.isEmpty()) return
+        alerts.distinctBy { "${it.packageName}_${it.scopeLabel}_${it.thresholdPercent}" }.forEach { alert ->
+            val title = if (alert.thresholdPercent == -1) {
+                "Master time is being used"
+            } else {
+                "Usage warning for ${alert.packageName}"
+            }
+            val body = when {
+                alert.thresholdPercent == -1 -> "Currently consuming master time (${alert.scopeLabel})."
+                alert.thresholdPercent == 0 -> "No time left for ${alert.scopeLabel}. App will lock now."
+                else -> "${alert.thresholdPercent}% time remaining for ${alert.scopeLabel}."
+            }
+
+            val notification = NotificationCompat.Builder(this, USAGE_ALERT_CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_notification)
+                .setContentTitle(title)
+                .setContentText(body)
+                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                .setAutoCancel(true)
+                .build()
+
+            NotificationManagerCompat.from(this).notify(
+                (alert.packageName + alert.scopeLabel + alert.thresholdPercent).hashCode(),
+                notification
+            )
+        }
+    }
+
     override fun onInterrupt() {
         try {
             LogUtils.d(TAG, "Accessibility service interrupted")
@@ -544,6 +623,7 @@ class AppLockAccessibilityService : AccessibilityService() {
     override fun onUnbind(intent: Intent?): Boolean {
         return try {
             Log.d(TAG, "Accessibility service unbound")
+            flushActiveUsage()
             isServiceRunning = false
             AppLockManager.startFallbackServices(this, AppLockAccessibilityService::class.java)
 
@@ -560,6 +640,7 @@ class AppLockAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         try {
+            flushActiveUsage()
             super.onDestroy()
             isServiceRunning = false
             LogUtils.d(TAG, "Accessibility service destroyed")

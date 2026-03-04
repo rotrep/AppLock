@@ -11,6 +11,9 @@ import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.time.DayOfWeek
+import dev.pranav.applock.data.repository.AppUsagePolicy
+import dev.pranav.applock.data.repository.DayUsageConfig
 
 @OptIn(FlowPreview::class)
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -89,6 +92,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun loadLockedApps() {
         _lockedApps.value = appLockRepository.getLockedApps()
+    }
+
+
+    fun getAppPolicy(packageName: String): AppUsagePolicy? = appLockRepository.getAppUsagePolicy(packageName)
+
+    fun saveAppPolicy(policy: AppUsagePolicy) {
+        appLockRepository.setAppUsagePolicy(policy)
+    }
+
+    fun copyDayConfig(packageName: String, sourceDay: DayOfWeek, targetDays: Set<DayOfWeek>) {
+        appLockRepository.copyUsagePolicyToDays(packageName, sourceDay, targetDays)
+    }
+
+    fun getDayConfig(packageName: String, dayOfWeek: DayOfWeek): DayUsageConfig? {
+        return appLockRepository.getAppUsagePolicy(packageName)?.dayConfigs?.get(dayOfWeek)
     }
 
     fun lockApps(packageNames: List<String>) {
