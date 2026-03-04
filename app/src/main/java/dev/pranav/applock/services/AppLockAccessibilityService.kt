@@ -32,6 +32,8 @@ class AppLockAccessibilityService : AccessibilityService() {
 
     private var recentsOpen = false
     private var lastForegroundPackage = ""
+    private var activeUsagePackage = ""
+    private var activeUsageStartMillis = 0L
 
     enum class BiometricState {
         IDLE, AUTH_STARTED
@@ -245,6 +247,7 @@ class AppLockAccessibilityService : AccessibilityService() {
     private fun processPackageLocking(packageName: String) {
         val currentForegroundPackage = packageName
         val triggeringPackage = lastForegroundPackage
+        flushUsageIfPackageChanged(currentForegroundPackage)
         lastForegroundPackage = currentForegroundPackage
 
         // Skip if triggering package is excluded
@@ -292,6 +295,11 @@ class AppLockAccessibilityService : AccessibilityService() {
 
         // Return if package is not locked
         if (packageName !in appLockRepository.getLockedApps()) {
+            return
+        }
+
+        // Allow app when schedule/time policy still has available time
+        if (appLockRepository.canUseAppNow(packageName, currentTime)) {
             return
         }
 
@@ -533,6 +541,30 @@ class AppLockAccessibilityService : AccessibilityService() {
         }
     }
 
+    private fun flushUsageIfPackageChanged(newPackage: String) {
+        val now = System.currentTimeMillis()
+        if (activeUsagePackage.isNotBlank() && activeUsagePackage != newPackage && activeUsageStartMillis > 0L) {
+            appLockRepository.consumeAppUsage(activeUsagePackage, activeUsageStartMillis, now)
+            activeUsageStartMillis = now
+            activeUsagePackage = newPackage
+            return
+        }
+
+        if (activeUsagePackage.isBlank()) {
+            activeUsagePackage = newPackage
+            activeUsageStartMillis = now
+        }
+    }
+
+    private fun flushActiveUsage() {
+        val now = System.currentTimeMillis()
+        if (activeUsagePackage.isNotBlank() && activeUsageStartMillis > 0L) {
+            appLockRepository.consumeAppUsage(activeUsagePackage, activeUsageStartMillis, now)
+        }
+        activeUsagePackage = ""
+        activeUsageStartMillis = 0L
+    }
+
     override fun onInterrupt() {
         try {
             LogUtils.d(TAG, "Accessibility service interrupted")
@@ -544,6 +576,7 @@ class AppLockAccessibilityService : AccessibilityService() {
     override fun onUnbind(intent: Intent?): Boolean {
         return try {
             Log.d(TAG, "Accessibility service unbound")
+            flushActiveUsage()
             isServiceRunning = false
             AppLockManager.startFallbackServices(this, AppLockAccessibilityService::class.java)
 
@@ -560,6 +593,7 @@ class AppLockAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         try {
+            flushActiveUsage()
             super.onDestroy()
             isServiceRunning = false
             LogUtils.d(TAG, "Accessibility service destroyed")

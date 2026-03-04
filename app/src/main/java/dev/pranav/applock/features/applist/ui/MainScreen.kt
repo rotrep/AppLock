@@ -12,6 +12,16 @@ import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.outlined.Schedule
+import androidx.compose.ui.text.input.KeyboardType
+import dev.pranav.applock.data.repository.AppUsagePolicy
+import dev.pranav.applock.data.repository.DayUsageConfig
+import dev.pranav.applock.data.repository.UsageWindow
+import java.time.DayOfWeek
+import java.util.UUID
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -74,6 +84,7 @@ fun MainScreen(
     val unlockedApps by mainViewModel.unlockedAppsFlow.collectAsState()
 
     var showAddAppsSheet by remember { mutableStateOf(false) }
+    var schedulePackage by remember { mutableStateOf<String?>(null) }
 
     var applockEnabled by remember { mutableStateOf(true) }
 
@@ -321,10 +332,26 @@ fun MainScreen(
                     lockedApps = lockedApps,
                     onUnlockApp = { appInfo ->
                         mainViewModel.unlockApp(appInfo.packageName)
+                    },
+                    onScheduleClick = { appInfo ->
+                        schedulePackage = appInfo.packageName
                     }
                 )
             }
         }
+    }
+
+
+    schedulePackage?.let { pkg ->
+        AppScheduleDialog(
+            packageName = pkg,
+            existingPolicy = mainViewModel.getAppPolicy(pkg),
+            onDismiss = { schedulePackage = null },
+            onSave = { policy ->
+                mainViewModel.saveAppPolicy(policy)
+                schedulePackage = null
+            }
+        )
     }
 
     if (showAddAppsSheet) {
@@ -394,7 +421,8 @@ private fun LoadingContent(modifier: Modifier = Modifier) {
 private fun ProtectedAppsDashboard(
     modifier: Modifier = Modifier,
     lockedApps: List<ApplicationInfo>,
-    onUnlockApp: (ApplicationInfo) -> Unit
+    onUnlockApp: (ApplicationInfo) -> Unit,
+    onScheduleClick: (ApplicationInfo) -> Unit
 ) {
     if (lockedApps.isEmpty()) {
         EmptyDashboardState(modifier = modifier)
@@ -407,7 +435,8 @@ private fun ProtectedAppsDashboard(
             items(lockedApps, key = { it.packageName }) { appInfo ->
                 ProtectedAppItem(
                     appInfo = appInfo,
-                    onUnlock = { onUnlockApp(appInfo) }
+                    onUnlock = { onUnlockApp(appInfo) },
+                    onSchedule = { onScheduleClick(appInfo) }
                 )
             }
         }
@@ -562,7 +591,8 @@ private fun AddProtectedAppsSheetContent(
 @Composable
 private fun ProtectedAppItem(
     appInfo: ApplicationInfo,
-    onUnlock: () -> Unit
+    onUnlock: () -> Unit,
+    onSchedule: () -> Unit
 ) {
     val context = LocalContext.current
 
@@ -618,12 +648,21 @@ private fun ProtectedAppItem(
             }
         },
         trailingContent = {
-            IconButton(onClick = onUnlock) {
-                Icon(
-                    imageVector = Icons.Outlined.LockOpen,
-                    contentDescription = "Unlock ${appName ?: "app"}",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+            Row {
+                IconButton(onClick = onSchedule) {
+                    Icon(
+                        imageVector = Icons.Outlined.Schedule,
+                        contentDescription = "Configure schedule for ${appName ?: "app"}",
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
+                IconButton(onClick = onUnlock) {
+                    Icon(
+                        imageVector = Icons.Outlined.LockOpen,
+                        contentDescription = "Unlock ${appName ?: "app"}",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         },
         colors = ListItemDefaults.colors(
@@ -828,4 +867,197 @@ private fun PermissionWarningBanner(
             }
         }
     }
+}
+
+
+@Composable
+private fun AppScheduleDialog(
+    packageName: String,
+    existingPolicy: AppUsagePolicy?,
+    onDismiss: () -> Unit,
+    onSave: (AppUsagePolicy) -> Unit
+) {
+    var selectedDay by remember { mutableStateOf(DayOfWeek.MONDAY) }
+    var dayEnabled by remember { mutableStateOf(existingPolicy?.dayConfigs?.get(selectedDay)?.enabled ?: false) }
+    var dailyLimit by remember { mutableStateOf((existingPolicy?.dayConfigs?.get(selectedDay)?.dailyLimitMinutes ?: 0).toString()) }
+    var windows by remember { mutableStateOf(existingPolicy?.dayConfigs?.get(selectedDay)?.windows ?: emptyList()) }
+    var masterEnabled by remember { mutableStateOf(existingPolicy?.masterTimeEnabled ?: false) }
+    var masterMinutes by remember { mutableStateOf((existingPolicy?.masterTimeMinutes ?: 0).toString()) }
+    val dayConfigs = remember { (existingPolicy?.dayConfigs ?: emptyMap()).toMutableMap() }
+    val repeatDays = remember { mutableStateListOf<DayOfWeek>() }
+
+    fun loadDay(day: DayOfWeek) {
+        val config = dayConfigs[day]
+        dayEnabled = config?.enabled ?: false
+        dailyLimit = (config?.dailyLimitMinutes ?: 0).toString()
+        windows = config?.windows ?: emptyList()
+    }
+
+    fun persistSelectedDay() {
+        dayConfigs[selectedDay] = DayUsageConfig(
+            enabled = dayEnabled,
+            dailyLimitMinutes = dailyLimit.toIntOrNull() ?: 0,
+            windows = windows
+        )
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Control de uso: $packageName") },
+        text = {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    DayOfWeek.entries.forEach { day ->
+                        FilterChip(
+                            selected = selectedDay == day,
+                            onClick = {
+                                persistSelectedDay()
+                                selectedDay = day
+                                loadDay(day)
+                            },
+                            label = { Text(day.name.take(3)) }
+                        )
+                    }
+                }
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Activar día")
+                    Spacer(modifier = Modifier.weight(1f))
+                    Switch(checked = dayEnabled, onCheckedChange = { dayEnabled = it })
+                }
+
+                OutlinedTextField(
+                    value = dailyLimit,
+                    onValueChange = { dailyLimit = it.filter { c -> c.isDigit() } },
+                    label = { Text("Tiempo diario (min)") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true
+                )
+
+                Text("Horarios del día")
+                windows.forEachIndexed { index, window ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        OutlinedTextField(
+                            value = minutesToTime(window.startMinutes),
+                            onValueChange = { value ->
+                                parseTimeToMinutes(value)?.let { min ->
+                                    windows = windows.toMutableList().also {
+                                        it[index] = it[index].copy(startMinutes = min)
+                                    }
+                                }
+                            },
+                            label = { Text("Inicio") },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true
+                        )
+                        OutlinedTextField(
+                            value = minutesToTime(window.endMinutes),
+                            onValueChange = { value ->
+                                parseTimeToMinutes(value)?.let { min ->
+                                    windows = windows.toMutableList().also {
+                                        it[index] = it[index].copy(endMinutes = min)
+                                    }
+                                }
+                            },
+                            label = { Text("Fin") },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true
+                        )
+                        OutlinedTextField(
+                            value = window.limitMinutes.toString(),
+                            onValueChange = { value ->
+                                windows = windows.toMutableList().also {
+                                    it[index] = it[index].copy(limitMinutes = value.toIntOrNull() ?: 0)
+                                }
+                            },
+                            label = { Text("Min") },
+                            modifier = Modifier.weight(1f),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            singleLine = true
+                        )
+                    }
+                }
+
+                TextButton(onClick = {
+                    windows = windows + UsageWindow(
+                        id = UUID.randomUUID().toString(),
+                        startMinutes = 13 * 60,
+                        endMinutes = 14 * 60,
+                        limitMinutes = 5
+                    )
+                }) {
+                    Text("+ Añadir horario")
+                }
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Tiempo master")
+                    Spacer(modifier = Modifier.weight(1f))
+                    Switch(checked = masterEnabled, onCheckedChange = { masterEnabled = it })
+                }
+                OutlinedTextField(
+                    value = masterMinutes,
+                    onValueChange = { masterMinutes = it.filter { c -> c.isDigit() } },
+                    label = { Text("Minutos master") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true
+                )
+
+                Text("Repetir configuración a:")
+                Row(modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                    DayOfWeek.entries.filter { it != selectedDay }.forEach { day ->
+                        FilterChip(
+                            selected = repeatDays.contains(day),
+                            onClick = {
+                                if (repeatDays.contains(day)) repeatDays.remove(day) else repeatDays.add(day)
+                            },
+                            label = { Text(day.name.take(3)) }
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                persistSelectedDay()
+                repeatDays.forEach { day ->
+                    dayConfigs[day] = dayConfigs[selectedDay] ?: DayUsageConfig()
+                }
+                onSave(
+                    AppUsagePolicy(
+                        appPackage = packageName,
+                        dayConfigs = dayConfigs,
+                        masterTimeEnabled = masterEnabled,
+                        masterTimeMinutes = masterMinutes.toIntOrNull() ?: 0
+                    )
+                )
+            }) {
+                Text("Guardar")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancelar") }
+        }
+    )
+}
+
+private fun parseTimeToMinutes(value: String): Int? {
+    val parts = value.split(":")
+    if (parts.size != 2) return null
+    val hour = parts[0].toIntOrNull() ?: return null
+    val minute = parts[1].toIntOrNull() ?: return null
+    if (hour !in 0..23 || minute !in 0..59) return null
+    return hour * 60 + minute
+}
+
+private fun minutesToTime(minutes: Int): String {
+    val h = (minutes / 60).coerceIn(0, 23)
+    val m = (minutes % 60).coerceIn(0, 59)
+    return "%02d:%02d".format(h, m)
 }
