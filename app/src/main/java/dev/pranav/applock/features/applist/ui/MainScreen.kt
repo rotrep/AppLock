@@ -12,6 +12,8 @@ import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -50,11 +52,14 @@ import dev.pranav.applock.core.utils.appLockRepository
 import dev.pranav.applock.core.utils.hasUsagePermission
 import dev.pranav.applock.core.utils.isAccessibilityServiceEnabled
 import dev.pranav.applock.core.utils.openAccessibilitySettings
+import dev.pranav.applock.data.repository.AppUsagePolicyRepository
 import dev.pranav.applock.data.repository.BackendImplementation
 import dev.pranav.applock.ui.components.DonateModalBottomSheet
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import rikka.shizuku.Shizuku
+import java.time.DayOfWeek
+import java.util.UUID
 
 @SuppressLint("LocalContextGetResourceValueCall")
 @OptIn(
@@ -74,6 +79,7 @@ fun MainScreen(
     val unlockedApps by mainViewModel.unlockedAppsFlow.collectAsState()
 
     var showAddAppsSheet by remember { mutableStateOf(false) }
+    var appForUsagePolicy by remember { mutableStateOf<ApplicationInfo?>(null) }
 
     var applockEnabled by remember { mutableStateOf(true) }
 
@@ -319,6 +325,7 @@ fun MainScreen(
                         .fillMaxWidth()
                         .weight(1f),
                     lockedApps = lockedApps,
+                    onEditPolicy = { appInfo -> appForUsagePolicy = appInfo },
                     onUnlockApp = { appInfo ->
                         mainViewModel.unlockApp(appInfo.packageName)
                     }
@@ -363,6 +370,13 @@ fun MainScreen(
             )
         }
     }
+
+    appForUsagePolicy?.let { appInfo ->
+        AppUsagePolicyEditorDialog(
+            appInfo = appInfo,
+            onDismiss = { appForUsagePolicy = null }
+        )
+    }
 }
 
 @Composable
@@ -394,6 +408,7 @@ private fun LoadingContent(modifier: Modifier = Modifier) {
 private fun ProtectedAppsDashboard(
     modifier: Modifier = Modifier,
     lockedApps: List<ApplicationInfo>,
+    onEditPolicy: (ApplicationInfo) -> Unit,
     onUnlockApp: (ApplicationInfo) -> Unit
 ) {
     if (lockedApps.isEmpty()) {
@@ -407,6 +422,7 @@ private fun ProtectedAppsDashboard(
             items(lockedApps, key = { it.packageName }) { appInfo ->
                 ProtectedAppItem(
                     appInfo = appInfo,
+                    onEditPolicy = { onEditPolicy(appInfo) },
                     onUnlock = { onUnlockApp(appInfo) }
                 )
             }
@@ -562,6 +578,7 @@ private fun AddProtectedAppsSheetContent(
 @Composable
 private fun ProtectedAppItem(
     appInfo: ApplicationInfo,
+    onEditPolicy: () -> Unit,
     onUnlock: () -> Unit
 ) {
     val context = LocalContext.current
@@ -618,12 +635,21 @@ private fun ProtectedAppItem(
             }
         },
         trailingContent = {
-            IconButton(onClick = onUnlock) {
-                Icon(
-                    imageVector = Icons.Outlined.LockOpen,
-                    contentDescription = "Unlock ${appName ?: "app"}",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+            Row {
+                IconButton(onClick = onEditPolicy) {
+                    Icon(
+                        imageVector = Icons.Default.Schedule,
+                        contentDescription = "Usage policy for ${appName ?: "app"}",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                IconButton(onClick = onUnlock) {
+                    Icon(
+                        imageVector = Icons.Outlined.LockOpen,
+                        contentDescription = "Unlock ${appName ?: "app"}",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         },
         colors = ListItemDefaults.colors(
@@ -634,6 +660,220 @@ private fun ProtectedAppItem(
             .padding(horizontal = 16.dp, vertical = 4.dp)
             .clip(RoundedCornerShape(16.dp))
     )
+}
+
+@Composable
+private fun AppUsagePolicyEditorDialog(
+    appInfo: ApplicationInfo,
+    onDismiss: () -> Unit,
+) {
+    val context = LocalContext.current
+    val repository = remember { context.appLockRepository() }
+    val packageName = appInfo.packageName
+
+    var appName by remember(appInfo) { mutableStateOf(packageName) }
+    LaunchedEffect(appInfo) {
+        withContext(Dispatchers.IO) {
+            appName = AppIconCache.getLabel(context, appInfo)
+        }
+    }
+
+    var policy by remember(packageName) {
+        mutableStateOf(repository.getAppUsagePolicy(packageName))
+    }
+    var selectedDay by remember { mutableStateOf(DayOfWeek.MONDAY) }
+    val selectedDayPolicy = policy.days[selectedDay] ?: AppUsagePolicyRepository.DayPolicy(false, emptyList())
+    var repeatDays by remember { mutableStateOf(setOf<DayOfWeek>()) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Usage policy: $appName") },
+        text = {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.verticalScroll(rememberScrollState())
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Enable policy", modifier = Modifier.weight(1f))
+                    Switch(
+                        checked = policy.scheduleEnabled,
+                        onCheckedChange = { policy = policy.copy(scheduleEnabled = it) }
+                    )
+                }
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Hard block app", modifier = Modifier.weight(1f))
+                    Switch(
+                        checked = policy.hardBlockEnabled,
+                        onCheckedChange = { policy = policy.copy(hardBlockEnabled = it) }
+                    )
+                }
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Enable master time", modifier = Modifier.weight(1f))
+                    Switch(
+                        checked = policy.masterEnabled,
+                        onCheckedChange = { policy = policy.copy(masterEnabled = it) }
+                    )
+                }
+
+                OutlinedTextField(
+                    value = policy.masterMinutes.toString(),
+                    onValueChange = { value ->
+                        policy = policy.copy(masterMinutes = value.toIntOrNull()?.coerceAtLeast(0) ?: 0)
+                    },
+                    label = { Text("Master minutes") },
+                    singleLine = true,
+                    enabled = policy.masterEnabled,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Text("Day configuration", style = MaterialTheme.typography.titleSmall)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                    DayOfWeek.entries.forEach { day ->
+                        FilterChip(
+                            selected = selectedDay == day,
+                            onClick = { selectedDay = day },
+                            label = { Text(day.name.take(3)) }
+                        )
+                    }
+                }
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Enable ${selectedDay.name.lowercase().replaceFirstChar { it.uppercase() }}", modifier = Modifier.weight(1f))
+                    Switch(
+                        checked = selectedDayPolicy.enabled,
+                        onCheckedChange = { enabled ->
+                            val next = selectedDayPolicy.copy(enabled = enabled)
+                            policy = policy.copy(days = policy.days + (selectedDay to next))
+                        }
+                    )
+                }
+
+                Text("Schedules for ${selectedDay.name.lowercase().replaceFirstChar { it.uppercase() }}")
+                selectedDayPolicy.windows.forEach { window ->
+                    Column {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            OutlinedTextField(
+                                value = minuteToText(window.startMinute),
+                                onValueChange = { text ->
+                                    parseTimeText(text)?.let { parsed ->
+                                        updateWindow(selectedDay, policy, window.id) { it.copy(startMinute = parsed) }
+                                            .also { policy = it }
+                                    }
+                                },
+                                label = { Text("Start") },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                            OutlinedTextField(
+                                value = minuteToText(window.endMinute),
+                                onValueChange = { text ->
+                                    parseTimeText(text)?.let { parsed ->
+                                        updateWindow(selectedDay, policy, window.id) { it.copy(endMinute = parsed) }
+                                            .also { policy = it }
+                                    }
+                                },
+                                label = { Text("End") },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                            IconButton(onClick = {
+                                val nextWindows = selectedDayPolicy.windows.filterNot { it.id == window.id }
+                                policy = policy.copy(days = policy.days + (selectedDay to selectedDayPolicy.copy(windows = nextWindows)))
+                            }) {
+                                Icon(Icons.Default.Delete, contentDescription = "Delete schedule")
+                            }
+                        }
+                        OutlinedTextField(
+                            value = window.budgetMinutes.toString(),
+                            onValueChange = { text ->
+                                updateWindow(selectedDay, policy, window.id) {
+                                    it.copy(budgetMinutes = text.toIntOrNull()?.coerceAtLeast(0) ?: 0)
+                                }.also { policy = it }
+                            },
+                            label = { Text("Available minutes") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
+
+                TextButton(onClick = {
+                    val newWindow = AppUsagePolicyRepository.TimeWindow(
+                        id = UUID.randomUUID().toString(),
+                        startMinute = 13 * 60,
+                        endMinute = 14 * 60,
+                        budgetMinutes = 5,
+                    )
+                    val next = selectedDayPolicy.copy(windows = selectedDayPolicy.windows + newWindow)
+                    policy = policy.copy(days = policy.days + (selectedDay to next))
+                }) {
+                    Text("+ Add schedule")
+                }
+
+                Text("Repeat selected day setup to:")
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                    DayOfWeek.entries.filter { it != selectedDay }.forEach { day ->
+                        FilterChip(
+                            selected = repeatDays.contains(day),
+                            onClick = {
+                                repeatDays = if (repeatDays.contains(day)) repeatDays - day else repeatDays + day
+                            },
+                            label = { Text(day.name.take(3)) }
+                        )
+                    }
+                }
+
+                TextButton(onClick = {
+                    val source = policy.days[selectedDay] ?: AppUsagePolicyRepository.DayPolicy(false, emptyList())
+                    val updates = repeatDays.associateWith { source.copy(windows = source.windows.map { it.copy(id = UUID.randomUUID().toString()) }) }
+                    policy = policy.copy(days = policy.days + updates)
+                }, enabled = repeatDays.isNotEmpty()) {
+                    Text("Apply to selected days")
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = {
+                repository.setAppUsagePolicy(packageName, policy)
+                onDismiss()
+            }) {
+                Text("Save")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
+}
+
+private fun updateWindow(
+    day: DayOfWeek,
+    policy: AppUsagePolicyRepository.AppPolicy,
+    windowId: String,
+    update: (AppUsagePolicyRepository.TimeWindow) -> AppUsagePolicyRepository.TimeWindow,
+): AppUsagePolicyRepository.AppPolicy {
+    val current = policy.days[day] ?: AppUsagePolicyRepository.DayPolicy(false, emptyList())
+    val nextWindows = current.windows.map { if (it.id == windowId) update(it) else it }
+    return policy.copy(days = policy.days + (day to current.copy(windows = nextWindows)))
+}
+
+private fun parseTimeText(text: String): Int? {
+    val parts = text.split(":")
+    if (parts.size != 2) return null
+    val hour = parts[0].toIntOrNull() ?: return null
+    val minute = parts[1].toIntOrNull() ?: return null
+    if (hour !in 0..23 || minute !in 0..59) return null
+    return hour * 60 + minute
+}
+
+private fun minuteToText(value: Int): String {
+    val hour = (value / 60).coerceIn(0, 23)
+    val minute = (value % 60).coerceIn(0, 59)
+    return "%02d:%02d".format(hour, minute)
 }
 
 @Composable
