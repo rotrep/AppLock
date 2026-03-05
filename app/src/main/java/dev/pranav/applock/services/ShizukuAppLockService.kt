@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.app.admin.DevicePolicyManager
+import android.content.ActivityNotFoundException
 import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -183,43 +184,24 @@ class ShizukuAppLockService : Service() {
     }
 
     private fun checkAndLockApp(packageName: String, triggeringPackage: String, currentTime: Long) {
+        AppLockManager.trackForegroundUsage(appLockRepository, packageName, currentTime)
+
         val lockedApps = appLockRepository.getLockedApps()
 
         if (packageName !in lockedApps) return
 
-        val unlockDurationMinutes = appLockRepository.getUnlockTimeDuration()
-        val unlockTimestamp = AppLockManager.appUnlockTimes[packageName] ?: 0L
-
-        LogUtils.d(
-            TAG,
-            "checkAndLockApp: pkg=$packageName, duration=$unlockDurationMinutes min, unlockTime=$unlockTimestamp, currentTime=$currentTime, isLockScreenShown=${AppLockManager.isLockScreenShown.get()}"
-        )
-
-        if (unlockDurationMinutes > 0 && unlockTimestamp > 0) {
-            if (unlockDurationMinutes >= 10_000) {
-                return
-            }
-
-            val durationMillis = unlockDurationMinutes.toLong() * 60_000L
-
-            val elapsedMillis = currentTime - unlockTimestamp
-
-            LogUtils.d(
-                TAG,
-                "Grace period check: elapsed=${elapsedMillis}ms (${elapsedMillis / 1000}s), duration=${durationMillis}ms (${durationMillis / 1000}s)"
-            )
-
-            if (elapsedMillis < durationMillis) {
-                return
-            }
-
-            LogUtils.d(TAG, "Unlock grace period expired for $packageName. Clearing timestamp.")
-            AppLockManager.appUnlockTimes.remove(packageName)
-        }
-
         if (AppLockManager.isLockScreenShown.get()) {
             LogUtils.d(TAG, "Lock screen already shown, skipping")
             return
+        }
+
+        if (AppLockManager.isAppTemporarilyUnlocked(packageName)) return
+
+        val decision = appLockRepository.evaluateUsageAccess(packageName, currentTime)
+        if (decision.allowWithoutLock) return
+
+        if (decision.exhausted) {
+            forceCloseCurrentApp()
         }
 
         LogUtils.d(TAG, "Locked app detected: $packageName. Showing overlay.")
@@ -240,6 +222,18 @@ class ShizukuAppLockService : Service() {
         } catch (e: Exception) {
             AppLockManager.isLockScreenShown.set(false)
             Log.e(TAG, "Failed to start password overlay: ${e.message}", e)
+        }
+    }
+
+    private fun forceCloseCurrentApp() {
+        val homeIntent = Intent(Intent.ACTION_MAIN).apply {
+            addCategory(Intent.CATEGORY_HOME)
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+        }
+        try {
+            startActivity(homeIntent)
+        } catch (_: ActivityNotFoundException) {
+            LogUtils.d(TAG, "Unable to launch Home activity while forcing app close")
         }
     }
 }
