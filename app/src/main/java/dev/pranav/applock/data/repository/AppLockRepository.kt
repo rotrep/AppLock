@@ -11,6 +11,7 @@ class AppLockRepository(private val context: Context) {
 
     private val preferencesRepository = PreferencesRepository(context)
     private val lockedAppsRepository = LockedAppsRepository(context)
+    private val appUsagePolicyRepository = AppUsagePolicyRepository(context)
     private val backendServiceManager = BackendServiceManager()
 
     fun getLockedApps(): Set<String> = lockedAppsRepository.getLockedApps()
@@ -19,6 +20,17 @@ class AppLockRepository(private val context: Context) {
         lockedAppsRepository.addMultipleLockedApps(packageNames)
     fun removeLockedApp(packageName: String) = lockedAppsRepository.removeLockedApp(packageName)
     fun isAppLocked(packageName: String): Boolean = lockedAppsRepository.isAppLocked(packageName)
+    fun getAppUsagePolicy(packageName: String): AppUsagePolicyRepository.AppPolicy =
+        appUsagePolicyRepository.getPolicy(packageName)
+
+    fun setAppUsagePolicy(packageName: String, policy: AppUsagePolicyRepository.AppPolicy) =
+        appUsagePolicyRepository.setPolicy(packageName, policy)
+
+    fun evaluateUsageAccess(packageName: String, nowMillis: Long): AppUsagePolicyRepository.AccessDecision =
+        appUsagePolicyRepository.evaluate(packageName, nowMillis)
+
+    fun consumeUsageTime(packageName: String, startMs: Long, endMs: Long) =
+        appUsagePolicyRepository.consumeUsage(packageName, startMs, endMs)
 
     fun getTriggerExcludedApps(): Set<String> = lockedAppsRepository.getTriggerExcludedApps()
     fun addTriggerExcludedApp(packageName: String) =

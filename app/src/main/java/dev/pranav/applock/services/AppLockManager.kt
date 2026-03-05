@@ -9,6 +9,7 @@ import android.os.Looper
 import android.util.Log
 import android.widget.Toast
 import dev.pranav.applock.core.utils.LogUtils
+import dev.pranav.applock.data.repository.AppLockRepository
 import dev.pranav.applock.data.repository.BackendImplementation
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
@@ -68,6 +69,8 @@ object AppLockManager {
     private var recentlyLeftApp: String = ""
     private var recentlyLeftTime: Long = 0L
     private const val GRACE_PERIOD_MS = 300L
+    private var trackedForegroundPackage: String? = null
+    private var trackedForegroundSinceMs: Long = 0L
 
     fun setRecentlyLeftApp(packageName: String) {
         recentlyLeftApp = packageName
@@ -124,6 +127,21 @@ object AppLockManager {
 
     fun clearTemporarilyUnlockedApp() {
         temporarilyUnlockedApp = ""
+    }
+
+    fun trackForegroundUsage(repository: AppLockRepository, currentPackage: String, nowMs: Long) {
+        val trackedPackage = trackedForegroundPackage
+        if (trackedPackage != null && trackedForegroundSinceMs > 0L) {
+            if (trackedPackage != currentPackage) {
+                repository.consumeUsageTime(trackedPackage, trackedForegroundSinceMs, nowMs)
+                trackedForegroundPackage = currentPackage
+                trackedForegroundSinceMs = nowMs
+                return
+            }
+            repository.consumeUsageTime(trackedPackage, trackedForegroundSinceMs, nowMs)
+        }
+        trackedForegroundPackage = currentPackage
+        trackedForegroundSinceMs = nowMs
     }
 
     fun startFallbackServices(context: Context, failedService: Class<*>) {

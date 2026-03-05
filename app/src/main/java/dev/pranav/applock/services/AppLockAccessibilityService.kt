@@ -283,64 +283,33 @@ class AppLockAccessibilityService : AccessibilityService() {
     }
 
     private fun checkAndLockApp(packageName: String, triggeringPackage: String, currentTime: Long) {
-        // Return early if lock screen is already shown or biometric auth is in progress
+        AppLockManager.trackForegroundUsage(appLockRepository, packageName, currentTime)
+
         if (AppLockManager.isLockScreenShown.get() ||
             AppLockManager.currentBiometricState == BiometricState.AUTH_STARTED
         ) {
             return
         }
 
-        // Return if package is not locked
         if (packageName !in appLockRepository.getLockedApps()) {
             return
         }
 
-        // Return if app is temporarily unlocked
         if (AppLockManager.isAppTemporarilyUnlocked(packageName)) {
             return
         }
 
-        AppLockManager.clearTemporarilyUnlockedApp()
-
-        val unlockDurationMinutes = appLockRepository.getUnlockTimeDuration()
-        val unlockTimestamp = AppLockManager.appUnlockTimes[packageName] ?: 0L
-
-        LogUtils.d(
-            TAG,
-            "checkAndLockApp: pkg=$packageName, duration=$unlockDurationMinutes min, unlockTime=$unlockTimestamp, currentTime=$currentTime, isLockScreenShown=${AppLockManager.isLockScreenShown.get()}"
-        )
-
-        if (unlockDurationMinutes > 0 && unlockTimestamp > 0) {
-            if (unlockDurationMinutes >= 10_000) {
-                return
-            }
-
-            val durationMillis = unlockDurationMinutes.toLong() * 60L * 1000L
-
-            val elapsedMillis = currentTime - unlockTimestamp
-
-            LogUtils.d(
-                TAG,
-                "Grace period check: elapsed=${elapsedMillis}ms (${elapsedMillis / 1000}s), duration=${durationMillis}ms (${durationMillis / 1000}s)"
-            )
-
-            if (elapsedMillis < durationMillis) {
-                return
-            }
-
-            LogUtils.d(TAG, "Unlock grace period expired for $packageName. Clearing timestamp.")
-            AppLockManager.appUnlockTimes.remove(packageName)
-            AppLockManager.clearTemporarilyUnlockedApp()
-        }
-
-        if (AppLockManager.isLockScreenShown.get() ||
-            AppLockManager.currentBiometricState == BiometricState.AUTH_STARTED
-        ) {
-            LogUtils.d(TAG, "Lock screen already shown or biometric auth in progress, skipping")
+        val decision = appLockRepository.evaluateUsageAccess(packageName, currentTime)
+        if (decision.allowWithoutLock) {
             return
         }
 
+        AppLockManager.clearTemporarilyUnlockedApp()
         showLockScreenOverlay(packageName, triggeringPackage)
+
+        if (decision.exhausted) {
+            performGlobalAction(GLOBAL_ACTION_HOME)
+        }
     }
 
     private fun showLockScreenOverlay(packageName: String, triggeringPackage: String) {
