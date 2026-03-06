@@ -31,6 +31,21 @@ class AppLockRepository(private val context: Context) {
         lockedAppsRepository.isAppTriggerExcluded(packageName)
 
     fun getAntiUninstallApps(): Set<String> = lockedAppsRepository.getAntiUninstallApps()
+
+    fun setDailyLimitMinutes(packageName: String, minutes: Int?) =
+        lockedAppsRepository.setDailyLimitMinutes(packageName, minutes)
+
+    fun getDailyLimitMinutes(packageName: String): Int? =
+        lockedAppsRepository.getDailyLimitMinutes(packageName)
+
+    fun isDailyLimitEnabled(packageName: String): Boolean =
+        lockedAppsRepository.isDailyLimitEnabled(packageName)
+
+    fun getRemainingDailyTimeMillis(packageName: String, currentDay: String): Long? =
+        lockedAppsRepository.getRemainingDailyTimeMillis(packageName, currentDay)
+
+    fun addUsedDailyTimeMillis(packageName: String, millisToAdd: Long, currentDay: String): Long =
+        lockedAppsRepository.addUsedDailyTimeMillis(packageName, millisToAdd, currentDay)
     fun addAntiUninstallApp(packageName: String) =
         lockedAppsRepository.addAntiUninstallApp(packageName)
 

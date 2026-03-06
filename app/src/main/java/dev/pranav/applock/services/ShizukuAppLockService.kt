@@ -11,6 +11,8 @@ import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import androidx.annotation.RequiresApi
 import androidx.core.app.NotificationCompat
@@ -29,6 +31,21 @@ class ShizukuAppLockService : Service() {
     private val appLockRepository: AppLockRepository by lazy { applicationContext.appLockRepository() }
     private var shizukuActivityManager: ShizukuActivityManager? = null
     private var previousForegroundPackage = ""
+    private val dailyUsageLimitManager by lazy { DailyUsageLimitManager(appLockRepository, TAG) }
+    private val usageTickHandler by lazy { Handler(Looper.getMainLooper()) }
+    private val usageTickRunnable = object : Runnable {
+        override fun run() {
+            if (!appLockRepository.isProtectEnabled() || applicationContext.isDeviceLocked()) {
+                dailyUsageLimitManager.clearActivePackage()
+            } else {
+                when (val result = dailyUsageLimitManager.tick(System.currentTimeMillis())) {
+                    is UsageTickResult.LimitReached -> forceImmediateLock(result.packageName, previousForegroundPackage)
+                    else -> Unit
+                }
+            }
+            usageTickHandler.postDelayed(this, 1_000L)
+        }
+    }
 
     private val notificationManager: NotificationManager by lazy {
         getSystemService(NotificationManager::class.java)
@@ -57,6 +74,8 @@ class ShizukuAppLockService : Service() {
         if (!shouldStartService(appLockRepository, this::class.java) || !isShizukuAvailable()) {
             Log.e(TAG, "Service not needed or Shizuku not ready. Triggering fallback if necessary.")
             isServiceRunning = false
+            usageTickHandler.removeCallbacksAndMessages(null)
+            dailyUsageLimitManager.clearActivePackage()
             AppLockManager.startFallbackServices(this, ShizukuAppLockService::class.java)
             stopSelf()
             return START_NOT_STICKY
@@ -78,6 +97,7 @@ class ShizukuAppLockService : Service() {
         }
 
         startForegroundService()
+        usageTickHandler.post(usageTickRunnable)
 
         return START_STICKY
     }
@@ -93,6 +113,8 @@ class ShizukuAppLockService : Service() {
         }
 
         isServiceRunning = false
+        usageTickHandler.removeCallbacksAndMessages(null)
+        dailyUsageLimitManager.clearActivePackage()
         notificationManager.cancel(NOTIFICATION_ID)
         super.onDestroy()
     }
@@ -158,6 +180,33 @@ class ShizukuAppLockService : Service() {
             .build()
     }
 
+
+    private fun forceImmediateLock(packageName: String, triggeringPackage: String) {
+        if (packageName !in appLockRepository.getLockedApps()) return
+        if (AppLockManager.isLockScreenShown.get()) return
+
+        AppLockManager.appUnlockTimes.remove(packageName)
+        AppLockManager.clearTemporarilyUnlockedApp()
+
+        val intent = Intent(this, PasswordOverlayActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS or
+                    Intent.FLAG_ACTIVITY_NO_ANIMATION or
+                    Intent.FLAG_FROM_BACKGROUND or
+                    Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+            putExtra("locked_package", packageName)
+            putExtra("triggering_package", triggeringPackage)
+        }
+
+        AppLockManager.isLockScreenShown.set(true)
+        try {
+            startActivity(intent)
+        } catch (e: Exception) {
+            AppLockManager.isLockScreenShown.set(false)
+            Log.e(TAG, "Failed to start immediate password overlay: ${e.message}", e)
+        }
+    }
+
     private fun setupShizukuActivityManager() {
         shizukuActivityManager =
             ShizukuActivityManager(this, appLockRepository) { packageName, _, timeMillis ->
@@ -185,7 +234,18 @@ class ShizukuAppLockService : Service() {
     private fun checkAndLockApp(packageName: String, triggeringPackage: String, currentTime: Long) {
         val lockedApps = appLockRepository.getLockedApps()
 
-        if (packageName !in lockedApps) return
+        if (packageName !in lockedApps) {
+            dailyUsageLimitManager.clearActivePackage()
+            return
+        }
+
+        when (dailyUsageLimitManager.handleForegroundPackageChange(packageName, currentTime)) {
+            UsageDecision.ALLOW_WITHOUT_PASSWORD -> {
+                AppLockManager.unlockApp(packageName)
+                return
+            }
+            UsageDecision.LOCK_WITH_PASSWORD -> Unit
+        }
 
         val unlockDurationMinutes = appLockRepository.getUnlockTimeDuration()
         val unlockTimestamp = AppLockManager.appUnlockTimes[packageName] ?: 0L

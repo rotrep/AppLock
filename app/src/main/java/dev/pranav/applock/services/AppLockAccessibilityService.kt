@@ -13,6 +13,8 @@ import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.Toast
+import android.os.Handler
+import android.os.Looper
 import androidx.core.content.getSystemService
 import dev.pranav.applock.core.broadcast.DeviceAdmin
 import dev.pranav.applock.core.utils.LogUtils
@@ -32,6 +34,23 @@ class AppLockAccessibilityService : AccessibilityService() {
 
     private var recentsOpen = false
     private var lastForegroundPackage = ""
+    private val dailyUsageLimitManager by lazy { DailyUsageLimitManager(appLockRepository, TAG) }
+    private val usageTickHandler by lazy { Handler(Looper.getMainLooper()) }
+    private val usageTickRunnable = object : Runnable {
+        override fun run() {
+            runCatching {
+                if (!appLockRepository.isProtectEnabled() || applicationContext.isDeviceLocked()) {
+                    dailyUsageLimitManager.clearActivePackage()
+                } else {
+                    when (val result = dailyUsageLimitManager.tick(System.currentTimeMillis())) {
+                        is UsageTickResult.LimitReached -> forceImmediateLock(result.packageName, lastForegroundPackage)
+                        else -> Unit
+                    }
+                }
+            }
+            usageTickHandler.postDelayed(this, 1_000L)
+        }
+    }
 
     enum class BiometricState {
         IDLE, AUTH_STARTED
@@ -55,6 +74,7 @@ class AppLockAccessibilityService : AccessibilityService() {
                     AppLockManager.clearTemporarilyUnlockedApp()
                     // Optional: Clear all unlock timestamps to force re-lock on next unlock
                     AppLockManager.appUnlockTimes.clear()
+                    dailyUsageLimitManager.clearActivePackage()
                 }
             } catch (e: Exception) {
                 logError("Error in screenStateReceiver", e)
@@ -75,6 +95,7 @@ class AppLockAccessibilityService : AccessibilityService() {
                 addAction(Intent.ACTION_USER_PRESENT)
             }
             registerReceiver(screenStateReceiver, filter)
+            usageTickHandler.post(usageTickRunnable)
         } catch (e: Exception) {
             logError("Error in onCreate", e)
         }
@@ -292,7 +313,16 @@ class AppLockAccessibilityService : AccessibilityService() {
 
         // Return if package is not locked
         if (packageName !in appLockRepository.getLockedApps()) {
+            dailyUsageLimitManager.clearActivePackage()
             return
+        }
+
+        when (dailyUsageLimitManager.handleForegroundPackageChange(packageName, currentTime)) {
+            UsageDecision.ALLOW_WITHOUT_PASSWORD -> {
+                AppLockManager.unlockApp(packageName)
+                return
+            }
+            UsageDecision.LOCK_WITH_PASSWORD -> Unit
         }
 
         // Return if app is temporarily unlocked
@@ -341,6 +371,17 @@ class AppLockAccessibilityService : AccessibilityService() {
         }
 
         showLockScreenOverlay(packageName, triggeringPackage)
+    }
+
+
+    private fun forceImmediateLock(packageName: String, triggeringPackage: String) {
+        if (AppLockManager.isLockScreenShown.get()) return
+        if (packageName !in appLockRepository.getLockedApps()) return
+
+        AppLockManager.appUnlockTimes.remove(packageName)
+        AppLockManager.clearTemporarilyUnlockedApp()
+        showLockScreenOverlay(packageName, triggeringPackage)
+        performGlobalAction(GLOBAL_ACTION_HOME)
     }
 
     private fun showLockScreenOverlay(packageName: String, triggeringPackage: String) {
@@ -545,6 +586,8 @@ class AppLockAccessibilityService : AccessibilityService() {
         return try {
             Log.d(TAG, "Accessibility service unbound")
             isServiceRunning = false
+            usageTickHandler.removeCallbacksAndMessages(null)
+            dailyUsageLimitManager.clearActivePackage()
             AppLockManager.startFallbackServices(this, AppLockAccessibilityService::class.java)
 
             if (Shizuku.pingBinder() && appLockRepository.isAntiUninstallEnabled()) {
@@ -572,6 +615,8 @@ class AppLockAccessibilityService : AccessibilityService() {
             }
 
             AppLockManager.isLockScreenShown.set(false)
+            usageTickHandler.removeCallbacksAndMessages(null)
+            dailyUsageLimitManager.clearActivePackage()
             AppLockManager.startFallbackServices(this, AppLockAccessibilityService::class.java)
         } catch (e: Exception) {
             logError("Error in onDestroy", e)

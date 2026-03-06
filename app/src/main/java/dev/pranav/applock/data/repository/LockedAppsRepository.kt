@@ -3,6 +3,7 @@ package dev.pranav.applock.data.repository
 import android.content.Context
 import android.content.SharedPreferences
 import androidx.core.content.edit
+import kotlin.math.max
 
 /**
  * Repository for managing locked applications and trigger exclusions.
@@ -26,7 +27,12 @@ class LockedAppsRepository(context: Context) {
 
     fun removeLockedApp(packageName: String) {
         val updated = getLockedApps() - packageName
-        preferences.edit { putStringSet(KEY_LOCKED_APPS, updated) }
+        preferences.edit {
+            putStringSet(KEY_LOCKED_APPS, updated)
+            remove("$KEY_DAILY_LIMIT_MINUTES_PREFIX$packageName")
+            remove("$KEY_DAILY_USAGE_MILLIS_PREFIX$packageName")
+            remove("$KEY_DAILY_USAGE_DATE_PREFIX$packageName")
+        }
     }
 
     fun isAppLocked(packageName: String): Boolean {
@@ -34,7 +40,15 @@ class LockedAppsRepository(context: Context) {
     }
 
     fun clearAllLockedApps() {
-        preferences.edit { putStringSet(KEY_LOCKED_APPS, emptySet()) }
+        val existingLockedApps = getLockedApps()
+        preferences.edit {
+            putStringSet(KEY_LOCKED_APPS, emptySet())
+            existingLockedApps.forEach { packageName ->
+                remove("$KEY_DAILY_LIMIT_MINUTES_PREFIX$packageName")
+                remove("$KEY_DAILY_USAGE_MILLIS_PREFIX$packageName")
+                remove("$KEY_DAILY_USAGE_DATE_PREFIX$packageName")
+            }
+        }
     }
 
     // Trigger Exclusions Management
@@ -96,7 +110,71 @@ class LockedAppsRepository(context: Context) {
 
     fun removeMultipleLockedApps(packageNames: Set<String>) {
         val updated = getLockedApps() - packageNames
-        preferences.edit { putStringSet(KEY_LOCKED_APPS, updated) }
+        preferences.edit {
+            putStringSet(KEY_LOCKED_APPS, updated)
+            packageNames.forEach { packageName ->
+                remove("$KEY_DAILY_LIMIT_MINUTES_PREFIX$packageName")
+                remove("$KEY_DAILY_USAGE_MILLIS_PREFIX$packageName")
+                remove("$KEY_DAILY_USAGE_DATE_PREFIX$packageName")
+            }
+        }
+    }
+
+    fun setDailyLimitMinutes(packageName: String, minutes: Int?) {
+        if (packageName.isBlank()) return
+
+        preferences.edit {
+            if (minutes == null || minutes <= 0) {
+                remove("$KEY_DAILY_LIMIT_MINUTES_PREFIX$packageName")
+                remove("$KEY_DAILY_USAGE_MILLIS_PREFIX$packageName")
+                remove("$KEY_DAILY_USAGE_DATE_PREFIX$packageName")
+            } else {
+                putInt("$KEY_DAILY_LIMIT_MINUTES_PREFIX$packageName", max(1, minutes))
+            }
+        }
+    }
+
+    fun getDailyLimitMinutes(packageName: String): Int? {
+        val key = "$KEY_DAILY_LIMIT_MINUTES_PREFIX$packageName"
+        return if (preferences.contains(key)) preferences.getInt(key, 0).takeIf { it > 0 } else null
+    }
+
+    fun isDailyLimitEnabled(packageName: String): Boolean {
+        return getDailyLimitMinutes(packageName) != null
+    }
+
+    fun getUsedDailyTimeMillis(packageName: String, currentDay: String): Long {
+        resetDailyUsageIfNeeded(packageName, currentDay)
+        return preferences.getLong("$KEY_DAILY_USAGE_MILLIS_PREFIX$packageName", 0L)
+    }
+
+    fun addUsedDailyTimeMillis(packageName: String, millisToAdd: Long, currentDay: String): Long {
+        if (millisToAdd <= 0L) return getUsedDailyTimeMillis(packageName, currentDay)
+        resetDailyUsageIfNeeded(packageName, currentDay)
+
+        val key = "$KEY_DAILY_USAGE_MILLIS_PREFIX$packageName"
+        val current = preferences.getLong(key, 0L)
+        val updated = current + millisToAdd
+        preferences.edit { putLong(key, updated) }
+        return updated
+    }
+
+    fun getRemainingDailyTimeMillis(packageName: String, currentDay: String): Long? {
+        val limitMinutes = getDailyLimitMinutes(packageName) ?: return null
+        val limitMillis = limitMinutes * 60_000L
+        val usedMillis = getUsedDailyTimeMillis(packageName, currentDay)
+        return (limitMillis - usedMillis).coerceAtLeast(0L)
+    }
+
+    private fun resetDailyUsageIfNeeded(packageName: String, currentDay: String) {
+        val dateKey = "$KEY_DAILY_USAGE_DATE_PREFIX$packageName"
+        val storedDay = preferences.getString(dateKey, null)
+        if (storedDay == currentDay) return
+
+        preferences.edit {
+            putString(dateKey, currentDay)
+            putLong("$KEY_DAILY_USAGE_MILLIS_PREFIX$packageName", 0L)
+        }
     }
 
     companion object {
@@ -104,5 +182,8 @@ class LockedAppsRepository(context: Context) {
         private const val KEY_LOCKED_APPS = "locked_apps"
         private const val KEY_TRIGGER_EXCLUDED_APPS = "trigger_excluded_apps"
         private const val KEY_ANTI_UNINSTALL_APPS = "anti_uninstall_apps"
+        private const val KEY_DAILY_LIMIT_MINUTES_PREFIX = "daily_limit_minutes_"
+        private const val KEY_DAILY_USAGE_MILLIS_PREFIX = "daily_used_millis_"
+        private const val KEY_DAILY_USAGE_DATE_PREFIX = "daily_used_date_"
     }
 }

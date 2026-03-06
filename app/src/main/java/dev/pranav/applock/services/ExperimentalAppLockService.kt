@@ -41,6 +41,7 @@ class ExperimentalAppLockService : Service() {
 
     private var timer: Timer? = null
     private var previousForegroundPackage = ""
+    private val dailyUsageLimitManager by lazy { DailyUsageLimitManager(appLockRepository, TAG) }
 
     private val screenStateReceiver = object: android.content.BroadcastReceiver() {
         override fun onReceive(context: android.content.Context?, intent: Intent?) {
@@ -52,6 +53,7 @@ class ExperimentalAppLockService : Service() {
                 AppLockManager.isLockScreenShown.set(false)
                 AppLockManager.clearTemporarilyUnlockedApp()
                 previousForegroundPackage = ""
+                dailyUsageLimitManager.clearActivePackage()
             }
         }
     }
@@ -96,6 +98,7 @@ class ExperimentalAppLockService : Service() {
         }
 
         AppLockManager.isLockScreenShown.set(false)
+        dailyUsageLimitManager.clearActivePackage()
         notificationManager.cancel(NOTIFICATION_ID)
         super.onDestroy()
     }
@@ -112,8 +115,14 @@ class ExperimentalAppLockService : Service() {
                 if (applicationContext.isDeviceLocked()) {
                     AppLockManager.appUnlockTimes.clear()
                     previousForegroundPackage = ""
+                    dailyUsageLimitManager.clearActivePackage()
                 }
                 return@timerTask
+            }
+
+            when (val result = dailyUsageLimitManager.tick(System.currentTimeMillis())) {
+                is UsageTickResult.LimitReached -> forceImmediateLock(result.packageName, previousForegroundPackage)
+                else -> Unit
             }
 
             val foregroundApp = getCurrentForegroundAppPackage() ?: return@timerTask
@@ -171,7 +180,18 @@ class ExperimentalAppLockService : Service() {
 
     private fun checkAndLockApp(packageName: String, triggeringPackage: String, currentTime: Long) {
         val lockedApps = appLockRepository.getLockedApps()
-        if (packageName !in lockedApps) return
+        if (packageName !in lockedApps) {
+            dailyUsageLimitManager.clearActivePackage()
+            return
+        }
+
+        when (dailyUsageLimitManager.handleForegroundPackageChange(packageName, currentTime)) {
+            UsageDecision.ALLOW_WITHOUT_PASSWORD -> {
+                AppLockManager.unlockApp(packageName)
+                return
+            }
+            UsageDecision.LOCK_WITH_PASSWORD -> Unit
+        }
 
         val unlockDurationMinutes = appLockRepository.getUnlockTimeDuration()
         val unlockTimestamp = AppLockManager.appUnlockTimes[packageName] ?: 0L
@@ -225,6 +245,33 @@ class ExperimentalAppLockService : Service() {
             startActivity(intent)
         } catch (e: Exception) {
             Log.e(TAG, "Error starting overlay for: $packageName", e)
+            AppLockManager.isLockScreenShown.set(false)
+        }
+    }
+
+
+    private fun forceImmediateLock(packageName: String, triggeringPackage: String) {
+        if (packageName !in appLockRepository.getLockedApps()) return
+        if (AppLockManager.isLockScreenShown.get()) return
+
+        AppLockManager.appUnlockTimes.remove(packageName)
+        AppLockManager.clearTemporarilyUnlockedApp()
+
+        val intent = Intent(this, PasswordOverlayActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS or
+                    Intent.FLAG_ACTIVITY_NO_ANIMATION or
+                    Intent.FLAG_FROM_BACKGROUND or
+                    Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+            putExtra("locked_package", packageName)
+            putExtra("triggering_package", triggeringPackage)
+        }
+
+        AppLockManager.isLockScreenShown.set(true)
+        try {
+            startActivity(intent)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error starting immediate overlay for: $packageName", e)
             AppLockManager.isLockScreenShown.set(false)
         }
     }
