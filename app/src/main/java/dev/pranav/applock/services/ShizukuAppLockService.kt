@@ -198,7 +198,12 @@ class ShizukuAppLockService : Service() {
             "checkAndLockApp: pkg=$packageName, duration=$unlockDurationMinutes min, unlockTime=$unlockTimestamp, currentTime=$currentTime, isLockScreenShown=${AppLockManager.isLockScreenShown.get()}"
         )
 
-        if (unlockDurationMinutes > 0 && unlockTimestamp > 0) {
+        if (policy.hardBlockEnabled) {
+            if (unlockTimestamp > 0) {
+                LogUtils.d(TAG, "Hard block enabled for $packageName. Ignoring and clearing unlock grace timestamp.")
+                AppLockManager.appUnlockTimes.remove(packageName)
+            }
+        } else if (unlockDurationMinutes > 0 && unlockTimestamp > 0) {
             if (unlockDurationMinutes >= 10_000) {
                 return
             }
