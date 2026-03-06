@@ -40,6 +40,12 @@ class AppLockRepository(private val context: Context) {
     fun isAppAntiUninstall(packageName: String): Boolean =
         lockedAppsRepository.isAppAntiUninstall(packageName)
 
+    fun getAppUsagePolicy(packageName: String): AppUsagePolicy =
+        lockedAppsRepository.getAppUsagePolicy(packageName)
+
+    fun setAppUsagePolicy(packageName: String, policy: AppUsagePolicy) =
+        lockedAppsRepository.setAppUsagePolicy(packageName, policy)
+
     fun getPassword(): String? = preferencesRepository.getPassword()
     fun setPassword(password: String) = preferencesRepository.setPassword(password)
     fun validatePassword(inputPassword: String): Boolean =

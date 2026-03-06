@@ -295,8 +295,10 @@ class AppLockAccessibilityService : AccessibilityService() {
             return
         }
 
-        // Return if app is temporarily unlocked
-        if (AppLockManager.isAppTemporarilyUnlocked(packageName)) {
+        val policy = appLockRepository.getAppUsagePolicy(packageName)
+
+        // Return if app is temporarily unlocked (except hard block mode)
+        if (!policy.hardBlockEnabled && AppLockManager.isAppTemporarilyUnlocked(packageName)) {
             return
         }
 

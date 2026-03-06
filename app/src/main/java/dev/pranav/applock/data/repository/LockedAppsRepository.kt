@@ -86,6 +86,20 @@ class LockedAppsRepository(context: Context) {
         preferences.edit { putStringSet(KEY_ANTI_UNINSTALL_APPS, emptySet()) }
     }
 
+    // Per-app usage policy management
+    fun getAppUsagePolicy(packageName: String): AppUsagePolicy {
+        val rawPolicy = preferences.getString("$KEY_APP_POLICY_PREFIX$packageName", null)
+            ?: return AppUsagePolicy()
+        return rawPolicy.toAppUsagePolicyOrDefault()
+    }
+
+    fun setAppUsagePolicy(packageName: String, policy: AppUsagePolicy) {
+        if (packageName.isBlank()) return
+        preferences.edit {
+            putString("$KEY_APP_POLICY_PREFIX$packageName", policy.toJsonString())
+        }
+    }
+
     // Bulk operations
     fun addMultipleLockedApps(packageNames: Set<String>) {
         val validPackageNames = packageNames.filter { it.isNotBlank() }.toSet()
@@ -104,5 +118,6 @@ class LockedAppsRepository(context: Context) {
         private const val KEY_LOCKED_APPS = "locked_apps"
         private const val KEY_TRIGGER_EXCLUDED_APPS = "trigger_excluded_apps"
         private const val KEY_ANTI_UNINSTALL_APPS = "anti_uninstall_apps"
+        private const val KEY_APP_POLICY_PREFIX = "app_policy_"
     }
 }

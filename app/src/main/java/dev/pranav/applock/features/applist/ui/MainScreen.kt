@@ -14,6 +14,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -36,6 +37,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.core.net.toUri
 import androidx.lifecycle.Lifecycle
@@ -51,6 +53,8 @@ import dev.pranav.applock.core.utils.hasUsagePermission
 import dev.pranav.applock.core.utils.isAccessibilityServiceEnabled
 import dev.pranav.applock.core.utils.openAccessibilitySettings
 import dev.pranav.applock.data.repository.BackendImplementation
+import dev.pranav.applock.data.repository.UsageWindow
+import dev.pranav.applock.data.repository.AppUsagePolicy
 import dev.pranav.applock.ui.components.DonateModalBottomSheet
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -396,6 +400,7 @@ private fun ProtectedAppsDashboard(
     lockedApps: List<ApplicationInfo>,
     onUnlockApp: (ApplicationInfo) -> Unit
 ) {
+    val context = LocalContext.current
     if (lockedApps.isEmpty()) {
         EmptyDashboardState(modifier = modifier)
     } else {
@@ -407,7 +412,8 @@ private fun ProtectedAppsDashboard(
             items(lockedApps, key = { it.packageName }) { appInfo ->
                 ProtectedAppItem(
                     appInfo = appInfo,
-                    onUnlock = { onUnlockApp(appInfo) }
+                    onUnlock = { onUnlockApp(appInfo) },
+                    repository = context.appLockRepository()
                 )
             }
         }
@@ -562,12 +568,17 @@ private fun AddProtectedAppsSheetContent(
 @Composable
 private fun ProtectedAppItem(
     appInfo: ApplicationInfo,
-    onUnlock: () -> Unit
+    onUnlock: () -> Unit,
+    repository: dev.pranav.applock.data.repository.AppLockRepository
 ) {
     val context = LocalContext.current
 
     var appName by remember(appInfo) { mutableStateOf<String?>(null) }
     var icon by remember(appInfo) { mutableStateOf<ImageBitmap?>(null) }
+    var showPolicyDialog by remember { mutableStateOf(false) }
+    val policy by remember(showPolicyDialog, appInfo.packageName) {
+        mutableStateOf(repository.getAppUsagePolicy(appInfo.packageName))
+    }
 
     LaunchedEffect(appInfo) {
         withContext(Dispatchers.IO) {
@@ -590,7 +601,7 @@ private fun ProtectedAppItem(
         },
         supportingContent = {
             Text(
-                text = "Protected",
+                text = if (policy.hardBlockEnabled) "Protected • Hard block ON" else "Protected",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.primary,
                 maxLines = 1,
@@ -618,12 +629,21 @@ private fun ProtectedAppItem(
             }
         },
         trailingContent = {
-            IconButton(onClick = onUnlock) {
-                Icon(
-                    imageVector = Icons.Outlined.LockOpen,
-                    contentDescription = "Unlock ${appName ?: "app"}",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+            Row {
+                IconButton(onClick = { showPolicyDialog = true }) {
+                    Icon(
+                        imageVector = Icons.Default.Schedule,
+                        contentDescription = "Policy ${appName ?: "app"}",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                IconButton(onClick = onUnlock) {
+                    Icon(
+                        imageVector = Icons.Outlined.LockOpen,
+                        contentDescription = "Unlock ${appName ?: "app"}",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         },
         colors = ListItemDefaults.colors(
@@ -634,6 +654,136 @@ private fun ProtectedAppItem(
             .padding(horizontal = 16.dp, vertical = 4.dp)
             .clip(RoundedCornerShape(16.dp))
     )
+
+    if (showPolicyDialog) {
+        AppPolicyEditorDialog(
+            packageName = appInfo.packageName,
+            onDismiss = { showPolicyDialog = false }
+        )
+    }
+}
+
+@Composable
+private fun AppPolicyEditorDialog(
+    packageName: String,
+    onDismiss: () -> Unit
+) {
+    val repository = LocalContext.current.appLockRepository()
+    var policy by remember(packageName) { mutableStateOf(repository.getAppUsagePolicy(packageName)) }
+    var selectedDay by remember { mutableIntStateOf(1) }
+    var startText by remember { mutableStateOf("13:00") }
+    var endText by remember { mutableStateOf("14:00") }
+    var minutesText by remember { mutableStateOf("5") }
+    var masterMinutesText by remember { mutableStateOf(policy.masterTimeMinutes.toString()) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Schedule & Hard Block") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Hard block app", modifier = Modifier.weight(1f))
+                    Switch(
+                        checked = policy.hardBlockEnabled,
+                        onCheckedChange = { policy = policy.copy(hardBlockEnabled = it) }
+                    )
+                }
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Enable master time", modifier = Modifier.weight(1f))
+                    Switch(
+                        checked = policy.masterTimeEnabled,
+                        onCheckedChange = { policy = policy.copy(masterTimeEnabled = it) }
+                    )
+                }
+
+                OutlinedTextField(
+                    value = masterMinutesText,
+                    onValueChange = {
+                        masterMinutesText = it.filter { ch -> ch.isDigit() }
+                        policy = policy.copy(masterTimeMinutes = masterMinutesText.toIntOrNull() ?: 0)
+                    },
+                    label = { Text("Master time (minutes)") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true,
+                    enabled = policy.masterTimeEnabled
+                )
+
+                Text("Day of week (1=Mon ... 7=Sun)")
+                Slider(
+                    value = selectedDay.toFloat(),
+                    onValueChange = { selectedDay = it.toInt().coerceIn(1, 7) },
+                    valueRange = 1f..7f,
+                    steps = 5
+                )
+
+                OutlinedTextField(value = startText, onValueChange = { startText = it }, label = { Text("Start (HH:mm)") })
+                OutlinedTextField(value = endText, onValueChange = { endText = it }, label = { Text("End (HH:mm)") })
+                OutlinedTextField(
+                    value = minutesText,
+                    onValueChange = { minutesText = it.filter { ch -> ch.isDigit() } },
+                    label = { Text("Allowed minutes") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                )
+
+                Button(onClick = {
+                    val start = parseTimeToMinutes(startText) ?: return@Button
+                    val end = parseTimeToMinutes(endText) ?: return@Button
+                    val window = UsageWindow(
+                        id = "${System.currentTimeMillis()}",
+                        startMinutes = start,
+                        endMinutes = end,
+                        allowedMinutes = minutesText.toIntOrNull() ?: 0
+                    )
+                    val currentWindows = policy.daySchedules[selectedDay].orEmpty()
+                    policy = policy.copy(daySchedules = policy.daySchedules + (selectedDay to (currentWindows + window)))
+                }) {
+                    Text("Add schedule")
+                }
+
+                policy.daySchedules[selectedDay].orEmpty().forEach { window ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "${formatMinutes(window.startMinutes)}-${formatMinutes(window.endMinutes)} (${window.allowedMinutes}m)",
+                            modifier = Modifier.weight(1f)
+                        )
+                        TextButton(onClick = {
+                            val updated = policy.daySchedules[selectedDay].orEmpty().filterNot { it.id == window.id }
+                            policy = policy.copy(daySchedules = policy.daySchedules + (selectedDay to updated))
+                        }) {
+                            Text("Delete")
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                repository.setAppUsagePolicy(packageName, policy)
+                onDismiss()
+            }) {
+                Text("Save")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}
+
+private fun parseTimeToMinutes(raw: String): Int? {
+    val parts = raw.split(":")
+    if (parts.size != 2) return null
+    val hour = parts[0].toIntOrNull() ?: return null
+    val minute = parts[1].toIntOrNull() ?: return null
+    if (hour !in 0..23 || minute !in 0..59) return null
+    return hour * 60 + minute
+}
+
+private fun formatMinutes(totalMinutes: Int): String {
+    val h = totalMinutes / 60
+    val m = totalMinutes % 60
+    return "%02d:%02d".format(h, m)
 }
 
 @Composable

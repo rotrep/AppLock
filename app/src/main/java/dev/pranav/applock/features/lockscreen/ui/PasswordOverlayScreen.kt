@@ -6,6 +6,7 @@ import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.view.WindowManager
+import android.widget.Toast
 import androidx.activity.addCallback
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -155,13 +156,29 @@ class PasswordOverlayActivity : FragmentActivity() {
     }
 
     private fun setupUI() {
+        val canUnlockApp: (String) -> Boolean = { pkgName ->
+            val policy = appLockRepository.getAppUsagePolicy(pkgName)
+            if (policy.hardBlockEnabled) {
+                Toast.makeText(
+                    this,
+                    "Hard Block is enabled for this app.",
+                    Toast.LENGTH_SHORT
+                ).show()
+                false
+            } else {
+                true
+            }
+        }
+
         val onPinAttemptCallback = { pin: String ->
             val isValid = appLockRepository.validatePassword(pin)
             if (isValid) {
                 lockedPackageNameFromIntent?.let { pkgName ->
-                    AppLockManager.unlockApp(pkgName)
+                    if (canUnlockApp(pkgName)) {
+                        AppLockManager.unlockApp(pkgName)
 
-                    finishAfterTransition()
+                        finishAfterTransition()
+                    }
                 }
             }
             isValid
@@ -171,9 +188,11 @@ class PasswordOverlayActivity : FragmentActivity() {
             val isValid = appLockRepository.validatePattern(pattern)
             if (isValid) {
                 lockedPackageNameFromIntent?.let { pkgName ->
-                    AppLockManager.unlockApp(pkgName)
+                    if (canUnlockApp(pkgName)) {
+                        AppLockManager.unlockApp(pkgName)
 
-                    finishAfterTransition()
+                        finishAfterTransition()
+                    }
                 }
             }
             isValid
@@ -246,6 +265,14 @@ class PasswordOverlayActivity : FragmentActivity() {
                 super.onAuthenticationSucceeded(result)
                 isBiometricPromptShowingLocal = false
                 lockedPackageNameFromIntent?.let { pkgName ->
+                    if (appLockRepository.getAppUsagePolicy(pkgName).hardBlockEnabled) {
+                        Toast.makeText(
+                            this@PasswordOverlayActivity,
+                            "Hard Block is enabled for this app.",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                        return
+                    }
                     AppLockManager.temporarilyUnlockAppWithBiometrics(pkgName)
                     // Fix: Do NOT relaunch the app. Just finish the overlay to reveal the underlying activity.
                     // This preserves the navigation stack/state of the locked app.

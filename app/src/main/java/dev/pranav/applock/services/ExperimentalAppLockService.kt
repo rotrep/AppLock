@@ -173,6 +173,9 @@ class ExperimentalAppLockService : Service() {
         val lockedApps = appLockRepository.getLockedApps()
         if (packageName !in lockedApps) return
 
+        val policy = appLockRepository.getAppUsagePolicy(packageName)
+        if (!policy.hardBlockEnabled && AppLockManager.isAppTemporarilyUnlocked(packageName)) return
+
         val unlockDurationMinutes = appLockRepository.getUnlockTimeDuration()
         val unlockTimestamp = AppLockManager.appUnlockTimes[packageName] ?: 0L
 
