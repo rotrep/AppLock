@@ -126,6 +126,25 @@ object AppLockManager {
         temporarilyUnlockedApp = ""
     }
 
+
+    fun clearUnlockStateForPackage(packageName: String) {
+        if (packageName.isBlank()) return
+
+        if (temporarilyUnlockedApp == packageName) {
+            temporarilyUnlockedApp = ""
+        }
+
+        appUnlockTimes.remove(packageName)
+
+        if (recentlyLeftApp == packageName) {
+            recentlyLeftApp = ""
+            recentlyLeftTime = 0L
+        }
+
+        LogUtils.d(TAG, "Cleared unlock state for $packageName")
+    }
+
+
     fun startFallbackServices(context: Context, failedService: Class<*>) {
         val serviceName = failedService.simpleName
 

@@ -313,10 +313,8 @@ class AppLockAccessibilityService : AccessibilityService() {
         )
 
         if (policy.hardBlockEnabled) {
-            if (unlockTimestamp > 0) {
-                LogUtils.d(TAG, "Hard block enabled for $packageName. Ignoring and clearing unlock grace timestamp.")
-                AppLockManager.appUnlockTimes.remove(packageName)
-            }
+            LogUtils.d(TAG, "Hard block enabled for $packageName. Ignoring unlock grace and clearing unlock session state.")
+            AppLockManager.clearUnlockStateForPackage(packageName)
         } else if (unlockDurationMinutes > 0 && unlockTimestamp > 0) {
             if (unlockDurationMinutes >= 10_000) {
                 return
@@ -336,7 +334,7 @@ class AppLockAccessibilityService : AccessibilityService() {
             }
 
             LogUtils.d(TAG, "Unlock grace period expired for $packageName. Clearing timestamp.")
-            AppLockManager.appUnlockTimes.remove(packageName)
+            AppLockManager.clearUnlockStateForPackage(packageName)
             AppLockManager.clearTemporarilyUnlockedApp()
         }
 
@@ -352,6 +350,7 @@ class AppLockAccessibilityService : AccessibilityService() {
 
     private fun showLockScreenOverlay(packageName: String, triggeringPackage: String) {
         LogUtils.d(TAG, "Locked app detected: $packageName. Showing overlay.")
+        AppLockManager.clearUnlockStateForPackage(packageName)
         AppLockManager.isLockScreenShown.set(true)
 
         val intent = Intent(this, PasswordOverlayActivity::class.java).apply {
