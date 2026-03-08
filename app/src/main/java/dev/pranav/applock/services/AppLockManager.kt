@@ -109,6 +109,12 @@ object AppLockManager {
         fun resetUsageIfDayChanged(): Boolean
     }
 
+    enum class DailyLimitEnforcementResult {
+        NO_LIMIT_CONFIGURED,
+        BYPASS_ALLOWED,
+        LOCK_REQUIRED
+    }
+
     private class RepositoryDailyLimitPolicyStore(
         private val repository: AppLockRepository
     ) : DailyLimitPolicyStore {
@@ -159,7 +165,8 @@ object AppLockManager {
             return
         }
 
-        if (!store.hasDailyLimit(normalizedCurrentPackage)) {
+        val configuredLimit = store.getDailyLimit(normalizedCurrentPackage)
+        if (configuredLimit == null || configuredLimit <= 0) {
             clearTrackedForegroundDailyLimitState()
             return
         }
@@ -192,7 +199,8 @@ object AppLockManager {
     internal fun hasDailyLimitConfigured(store: DailyLimitPolicyStore, packageName: String): Boolean {
         if (packageName.isBlank()) return false
         ensureDailyUsageIsFresh(store, System.currentTimeMillis())
-        return store.hasDailyLimit(packageName)
+        val dailyLimit = store.getDailyLimit(packageName)
+        return dailyLimit != null && dailyLimit > 0
     }
 
     @Synchronized
@@ -219,8 +227,43 @@ object AppLockManager {
         ensureDailyUsageIsFresh(store, nowMillis)
 
         val dailyLimit = store.getDailyLimit(packageName) ?: return null
+        if (dailyLimit <= 0) return null
         val usedSeconds = getEffectiveUsedSeconds(store, packageName, nowMillis)
         return (dailyLimit - usedSeconds).coerceAtLeast(0)
+    }
+
+    @Synchronized
+    fun enforceDailyLimitForLockDecision(
+        repository: AppLockRepository,
+        packageName: String,
+        nowMillis: Long = System.currentTimeMillis()
+    ): DailyLimitEnforcementResult {
+        return enforceDailyLimitForLockDecision(
+            RepositoryDailyLimitPolicyStore(repository),
+            packageName,
+            nowMillis
+        )
+    }
+
+    @Synchronized
+    internal fun enforceDailyLimitForLockDecision(
+        store: DailyLimitPolicyStore,
+        packageName: String,
+        nowMillis: Long
+    ): DailyLimitEnforcementResult {
+        if (packageName.isBlank()) return DailyLimitEnforcementResult.NO_LIMIT_CONFIGURED
+
+        val remaining = getRemainingDailyLimitSeconds(store, packageName, nowMillis)
+            ?: return DailyLimitEnforcementResult.NO_LIMIT_CONFIGURED
+
+        if (remaining > 0) return DailyLimitEnforcementResult.BYPASS_ALLOWED
+
+        // Daily-limit policy takes precedence over stale temporary unlock/grace state.
+        appUnlockTimes.remove(packageName)
+        if (isAppTemporarilyUnlocked(packageName)) {
+            clearTemporarilyUnlockedApp()
+        }
+        return DailyLimitEnforcementResult.LOCK_REQUIRED
     }
 
     @Synchronized
