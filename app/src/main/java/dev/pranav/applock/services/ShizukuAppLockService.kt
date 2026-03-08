@@ -86,6 +86,7 @@ class ShizukuAppLockService : Service() {
         LogUtils.d(TAG, "ShizukuAppLockService killed.")
 
         shizukuActivityManager?.stop()
+        AppLockManager.pauseDailyLimitTracking(appLockRepository)
 
         if (isServiceRunning && shouldStartService(appLockRepository, this::class.java)) {
             LogUtils.d(TAG, "Service destroyed unexpectedly, starting fallback")
@@ -164,6 +165,13 @@ class ShizukuAppLockService : Service() {
                 val triggeringPackage = previousForegroundPackage
                 previousForegroundPackage = packageName
 
+                AppLockManager.onForegroundAppTransition(
+                    repository = appLockRepository,
+                    previousPackage = triggeringPackage,
+                    currentPackage = packageName,
+                    nowMillis = timeMillis
+                )
+
                 if (AppLockManager.isLockScreenShown.get() || packageName == this.packageName) {
                     return@ShizukuActivityManager
                 }
@@ -186,6 +194,18 @@ class ShizukuAppLockService : Service() {
         val lockedApps = appLockRepository.getLockedApps()
 
         if (packageName !in lockedApps) return
+
+        if (AppLockManager.hasDailyLimitConfigured(appLockRepository, packageName)) {
+            if (AppLockManager.shouldBypassLockByDailyLimit(appLockRepository, packageName, currentTime)) {
+                LogUtils.d(TAG, "Daily-limit policy allows bypass for $packageName")
+                return
+            }
+
+            AppLockManager.appUnlockTimes.remove(packageName)
+            if (AppLockManager.isAppTemporarilyUnlocked(packageName)) {
+                AppLockManager.clearTemporarilyUnlockedApp()
+            }
+        }
 
         val unlockDurationMinutes = appLockRepository.getUnlockTimeDuration()
         val unlockTimestamp = AppLockManager.appUnlockTimes[packageName] ?: 0L
