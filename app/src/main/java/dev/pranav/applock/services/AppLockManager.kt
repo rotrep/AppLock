@@ -9,6 +9,7 @@ import android.os.Looper
 import android.util.Log
 import android.widget.Toast
 import dev.pranav.applock.core.utils.LogUtils
+import dev.pranav.applock.data.repository.AppLockRepository
 import dev.pranav.applock.data.repository.BackendImplementation
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
@@ -97,10 +98,158 @@ object AppLockManager {
     private val serviceRestartAttempts = ConcurrentHashMap<String, Int>()
     private val lastRestartTime = ConcurrentHashMap<String, Long>()
 
+    private var trackedForegroundPackageForDailyLimit: String = ""
+    private var trackedForegroundStartTimeMillis: Long = 0L
+
+    interface DailyLimitPolicyStore {
+        fun hasDailyLimit(packageName: String): Boolean
+        fun getDailyLimit(packageName: String): Int?
+        fun getUsedSecondsForToday(packageName: String): Int
+        fun incrementUsedSecondsForToday(packageName: String, additionalSeconds: Int): Int
+        fun resetUsageIfDayChanged(): Boolean
+    }
+
+    private class RepositoryDailyLimitPolicyStore(
+        private val repository: AppLockRepository
+    ) : DailyLimitPolicyStore {
+        override fun hasDailyLimit(packageName: String): Boolean = repository.hasDailyLimit(packageName)
+        override fun getDailyLimit(packageName: String): Int? = repository.getDailyLimit(packageName)
+        override fun getUsedSecondsForToday(packageName: String): Int =
+            repository.getUsedSecondsForToday(packageName)
+
+        override fun incrementUsedSecondsForToday(packageName: String, additionalSeconds: Int): Int =
+            repository.incrementUsedSecondsForToday(packageName, additionalSeconds)
+
+        override fun resetUsageIfDayChanged(): Boolean = repository.resetUsageIfDayChanged()
+    }
+
     private val ALL_APP_LOCK_SERVICES = setOf(
         ShizukuAppLockService::class.java,
         ExperimentalAppLockService::class.java
     )
+
+    @Synchronized
+    fun onForegroundAppTransition(
+        repository: AppLockRepository,
+        previousPackage: String?,
+        currentPackage: String?,
+        nowMillis: Long = System.currentTimeMillis()
+    ) {
+        onForegroundAppTransition(
+            RepositoryDailyLimitPolicyStore(repository),
+            previousPackage,
+            currentPackage,
+            nowMillis
+        )
+    }
+
+    @Synchronized
+    internal fun onForegroundAppTransition(
+        store: DailyLimitPolicyStore,
+        previousPackage: String?,
+        currentPackage: String?,
+        nowMillis: Long
+    ) {
+        ensureDailyUsageIsFresh(store, nowMillis)
+        accrueTrackedForegroundUsage(store, nowMillis)
+
+        val normalizedCurrentPackage = currentPackage?.takeIf { it.isNotBlank() }
+        if (normalizedCurrentPackage == null) {
+            clearTrackedForegroundDailyLimitState()
+            return
+        }
+
+        if (!store.hasDailyLimit(normalizedCurrentPackage)) {
+            clearTrackedForegroundDailyLimitState()
+            return
+        }
+
+        trackedForegroundPackageForDailyLimit = normalizedCurrentPackage
+        trackedForegroundStartTimeMillis = nowMillis
+    }
+
+    @Synchronized
+    fun pauseDailyLimitTracking(
+        repository: AppLockRepository,
+        nowMillis: Long = System.currentTimeMillis()
+    ) {
+        pauseDailyLimitTracking(RepositoryDailyLimitPolicyStore(repository), nowMillis)
+    }
+
+    @Synchronized
+    internal fun pauseDailyLimitTracking(store: DailyLimitPolicyStore, nowMillis: Long) {
+        ensureDailyUsageIsFresh(store, nowMillis)
+        accrueTrackedForegroundUsage(store, nowMillis)
+        clearTrackedForegroundDailyLimitState()
+    }
+
+    @Synchronized
+    fun hasDailyLimitConfigured(repository: AppLockRepository, packageName: String): Boolean {
+        return hasDailyLimitConfigured(RepositoryDailyLimitPolicyStore(repository), packageName)
+    }
+
+    @Synchronized
+    internal fun hasDailyLimitConfigured(store: DailyLimitPolicyStore, packageName: String): Boolean {
+        if (packageName.isBlank()) return false
+        ensureDailyUsageIsFresh(store, System.currentTimeMillis())
+        return store.hasDailyLimit(packageName)
+    }
+
+    @Synchronized
+    fun getRemainingDailyLimitSeconds(
+        repository: AppLockRepository,
+        packageName: String,
+        nowMillis: Long = System.currentTimeMillis()
+    ): Int? {
+        return getRemainingDailyLimitSeconds(
+            RepositoryDailyLimitPolicyStore(repository),
+            packageName,
+            nowMillis
+        )
+    }
+
+    @Synchronized
+    internal fun getRemainingDailyLimitSeconds(
+        store: DailyLimitPolicyStore,
+        packageName: String,
+        nowMillis: Long
+    ): Int? {
+        if (packageName.isBlank()) return null
+
+        ensureDailyUsageIsFresh(store, nowMillis)
+
+        val dailyLimit = store.getDailyLimit(packageName) ?: return null
+        val usedSeconds = getEffectiveUsedSeconds(store, packageName, nowMillis)
+        return (dailyLimit - usedSeconds).coerceAtLeast(0)
+    }
+
+    @Synchronized
+    fun shouldBypassLockByDailyLimit(
+        repository: AppLockRepository,
+        packageName: String,
+        nowMillis: Long = System.currentTimeMillis()
+    ): Boolean {
+        return shouldBypassLockByDailyLimit(
+            RepositoryDailyLimitPolicyStore(repository),
+            packageName,
+            nowMillis
+        )
+    }
+
+    @Synchronized
+    internal fun shouldBypassLockByDailyLimit(
+        store: DailyLimitPolicyStore,
+        packageName: String,
+        nowMillis: Long
+    ): Boolean {
+        val remaining = getRemainingDailyLimitSeconds(store, packageName, nowMillis) ?: return false
+        return remaining > 0
+    }
+
+    @Synchronized
+    internal fun resetDailyLimitTrackingState() {
+        clearTrackedForegroundDailyLimitState()
+    }
 
     fun unlockApp(packageName: String) {
         temporarilyUnlockedApp = packageName
@@ -239,5 +388,45 @@ object AppLockManager {
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start fallback service for backend: $backend", e)
         }
+    }
+
+    private fun ensureDailyUsageIsFresh(store: DailyLimitPolicyStore, nowMillis: Long) {
+        if (store.resetUsageIfDayChanged() && trackedForegroundPackageForDailyLimit.isNotBlank()) {
+            trackedForegroundStartTimeMillis = nowMillis
+        }
+    }
+
+    private fun accrueTrackedForegroundUsage(store: DailyLimitPolicyStore, nowMillis: Long) {
+        val trackedPackage = trackedForegroundPackageForDailyLimit
+        val trackingStart = trackedForegroundStartTimeMillis
+        if (trackedPackage.isBlank() || trackingStart <= 0L || nowMillis <= trackingStart) return
+
+        val elapsedSeconds = ((nowMillis - trackingStart) / 1000L).toInt()
+        if (elapsedSeconds <= 0) return
+
+        store.incrementUsedSecondsForToday(trackedPackage, elapsedSeconds)
+        trackedForegroundStartTimeMillis = trackingStart + (elapsedSeconds * 1000L)
+    }
+
+    private fun getEffectiveUsedSeconds(
+        store: DailyLimitPolicyStore,
+        packageName: String,
+        nowMillis: Long
+    ): Int {
+        var usedSeconds = store.getUsedSecondsForToday(packageName)
+
+        if (packageName == trackedForegroundPackageForDailyLimit &&
+            trackedForegroundStartTimeMillis > 0L &&
+            nowMillis > trackedForegroundStartTimeMillis
+        ) {
+            usedSeconds += ((nowMillis - trackedForegroundStartTimeMillis) / 1000L).toInt()
+        }
+
+        return usedSeconds
+    }
+
+    private fun clearTrackedForegroundDailyLimitState() {
+        trackedForegroundPackageForDailyLimit = ""
+        trackedForegroundStartTimeMillis = 0L
     }
 }

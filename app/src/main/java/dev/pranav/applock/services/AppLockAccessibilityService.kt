@@ -53,6 +53,7 @@ class AppLockAccessibilityService : AccessibilityService() {
                     LogUtils.d(TAG, "Screen off detected. Resetting AppLock state.")
                     AppLockManager.isLockScreenShown.set(false)
                     AppLockManager.clearTemporarilyUnlockedApp()
+                    AppLockManager.pauseDailyLimitTracking(appLockRepository)
                     // Optional: Clear all unlock timestamps to force re-lock on next unlock
                     AppLockManager.appUnlockTimes.clear()
                 }
@@ -245,7 +246,15 @@ class AppLockAccessibilityService : AccessibilityService() {
     private fun processPackageLocking(packageName: String) {
         val currentForegroundPackage = packageName
         val triggeringPackage = lastForegroundPackage
+        val now = System.currentTimeMillis()
         lastForegroundPackage = currentForegroundPackage
+
+        AppLockManager.onForegroundAppTransition(
+            repository = appLockRepository,
+            previousPackage = triggeringPackage,
+            currentPackage = currentForegroundPackage,
+            nowMillis = now
+        )
 
         // Skip if triggering package is excluded
         if (triggeringPackage in appLockRepository.getTriggerExcludedApps()) {
@@ -266,7 +275,7 @@ class AppLockAccessibilityService : AccessibilityService() {
             AppLockManager.clearTemporarilyUnlockedApp()
         }
 
-        checkAndLockApp(currentForegroundPackage, triggeringPackage, System.currentTimeMillis())
+        checkAndLockApp(currentForegroundPackage, triggeringPackage, now)
     }
 
     private fun shouldAccessibilityHandleLocking(): Boolean {
@@ -293,6 +302,19 @@ class AppLockAccessibilityService : AccessibilityService() {
         // Return if package is not locked
         if (packageName !in appLockRepository.getLockedApps()) {
             return
+        }
+
+        if (AppLockManager.hasDailyLimitConfigured(appLockRepository, packageName)) {
+            if (AppLockManager.shouldBypassLockByDailyLimit(appLockRepository, packageName, currentTime)) {
+                LogUtils.d(TAG, "Daily-limit policy allows bypass for $packageName")
+                return
+            }
+
+            // Daily-limit allowance has ended; do not keep bypass via temporary unlock state.
+            AppLockManager.appUnlockTimes.remove(packageName)
+            if (AppLockManager.isAppTemporarilyUnlocked(packageName)) {
+                AppLockManager.clearTemporarilyUnlockedApp()
+            }
         }
 
         // Return if app is temporarily unlocked
@@ -545,6 +567,7 @@ class AppLockAccessibilityService : AccessibilityService() {
         return try {
             Log.d(TAG, "Accessibility service unbound")
             isServiceRunning = false
+            AppLockManager.pauseDailyLimitTracking(appLockRepository)
             AppLockManager.startFallbackServices(this, AppLockAccessibilityService::class.java)
 
             if (Shizuku.pingBinder() && appLockRepository.isAntiUninstallEnabled()) {
@@ -572,6 +595,7 @@ class AppLockAccessibilityService : AccessibilityService() {
             }
 
             AppLockManager.isLockScreenShown.set(false)
+            AppLockManager.pauseDailyLimitTracking(appLockRepository)
             AppLockManager.startFallbackServices(this, AppLockAccessibilityService::class.java)
         } catch (e: Exception) {
             logError("Error in onDestroy", e)
