@@ -181,16 +181,14 @@ class ExperimentalAppLockService : Service() {
         val lockedApps = appLockRepository.getLockedApps()
         if (packageName !in lockedApps) return
 
-        if (AppLockManager.hasDailyLimitConfigured(appLockRepository, packageName)) {
-            if (AppLockManager.shouldBypassLockByDailyLimit(appLockRepository, packageName, currentTime)) {
+        when (AppLockManager.enforceDailyLimitForLockDecision(appLockRepository, packageName, currentTime)) {
+            AppLockManager.DailyLimitEnforcementResult.BYPASS_ALLOWED -> {
                 LogUtils.d(TAG, "Daily-limit policy allows bypass for $packageName")
                 return
             }
 
-            AppLockManager.appUnlockTimes.remove(packageName)
-            if (AppLockManager.isAppTemporarilyUnlocked(packageName)) {
-                AppLockManager.clearTemporarilyUnlockedApp()
-            }
+            AppLockManager.DailyLimitEnforcementResult.LOCK_REQUIRED,
+            AppLockManager.DailyLimitEnforcementResult.NO_LIMIT_CONFIGURED -> Unit
         }
 
         val unlockDurationMinutes = appLockRepository.getUnlockTimeDuration()

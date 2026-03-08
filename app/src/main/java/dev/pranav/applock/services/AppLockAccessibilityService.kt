@@ -304,17 +304,14 @@ class AppLockAccessibilityService : AccessibilityService() {
             return
         }
 
-        if (AppLockManager.hasDailyLimitConfigured(appLockRepository, packageName)) {
-            if (AppLockManager.shouldBypassLockByDailyLimit(appLockRepository, packageName, currentTime)) {
+        when (AppLockManager.enforceDailyLimitForLockDecision(appLockRepository, packageName, currentTime)) {
+            AppLockManager.DailyLimitEnforcementResult.BYPASS_ALLOWED -> {
                 LogUtils.d(TAG, "Daily-limit policy allows bypass for $packageName")
                 return
             }
 
-            // Daily-limit allowance has ended; do not keep bypass via temporary unlock state.
-            AppLockManager.appUnlockTimes.remove(packageName)
-            if (AppLockManager.isAppTemporarilyUnlocked(packageName)) {
-                AppLockManager.clearTemporarilyUnlockedApp()
-            }
+            AppLockManager.DailyLimitEnforcementResult.LOCK_REQUIRED,
+            AppLockManager.DailyLimitEnforcementResult.NO_LIMIT_CONFIGURED -> Unit
         }
 
         // Return if app is temporarily unlocked

@@ -12,6 +12,8 @@ class AppLockManagerDailyLimitTest {
     @After
     fun tearDown() {
         AppLockManager.resetDailyLimitTrackingState()
+        AppLockManager.clearTemporarilyUnlockedApp()
+        AppLockManager.appUnlockTimes.clear()
     }
 
     @Test
@@ -43,6 +45,25 @@ class AppLockManagerDailyLimitTest {
 
         assertNull(remaining)
         assertFalse(AppLockManager.shouldBypassLockByDailyLimit(store, "com.example.none", 2_000L))
+    }
+
+    @Test
+    fun `zero or invalid limit does not act as configured limited app`() {
+        val store = FakeDailyLimitStore(
+            dailyLimits = mutableMapOf(
+                "com.example.zero" to 0,
+                "com.example.negative" to -30
+            ),
+            dailyUsage = mutableMapOf(
+                "com.example.zero" to 100,
+                "com.example.negative" to 100
+            )
+        )
+
+        assertFalse(AppLockManager.hasDailyLimitConfigured(store, "com.example.zero"))
+        assertFalse(AppLockManager.hasDailyLimitConfigured(store, "com.example.negative"))
+        assertNull(AppLockManager.getRemainingDailyLimitSeconds(store, "com.example.zero", 10_000L))
+        assertNull(AppLockManager.getRemainingDailyLimitSeconds(store, "com.example.negative", 10_000L))
     }
 
     @Test
@@ -89,6 +110,34 @@ class AppLockManagerDailyLimitTest {
     }
 
     @Test
+    fun `quick app switching accrues usage only while limited app is foreground`() {
+        val store = FakeDailyLimitStore(
+            dailyLimits = mutableMapOf("com.example.limited" to 600)
+        )
+
+        AppLockManager.onForegroundAppTransition(store, "", "com.example.limited", 1_000L)
+        AppLockManager.onForegroundAppTransition(store, "com.example.limited", "com.example.other", 1_900L)
+        AppLockManager.onForegroundAppTransition(store, "com.example.other", "com.example.limited", 2_000L)
+        AppLockManager.onForegroundAppTransition(store, "com.example.limited", "com.example.other", 3_100L)
+
+        assertEquals(1, store.getUsedSecondsForToday("com.example.limited"))
+    }
+
+    @Test
+    fun `pause tracking simulates screen off or process death and accrues once`() {
+        val store = FakeDailyLimitStore(
+            dailyLimits = mutableMapOf("com.example.limited" to 600)
+        )
+
+        AppLockManager.onForegroundAppTransition(store, "", "com.example.limited", 10_000L)
+        AppLockManager.pauseDailyLimitTracking(store, 13_250L)
+        AppLockManager.onForegroundAppTransition(store, "", "com.example.limited", 20_000L)
+        AppLockManager.onForegroundAppTransition(store, "com.example.limited", "com.example.other", 21_050L)
+
+        assertEquals(4, store.getUsedSecondsForToday("com.example.limited"))
+    }
+
+    @Test
     fun `bypass is false when daily limit is exhausted`() {
         val store = FakeDailyLimitStore(
             dailyLimits = mutableMapOf("com.example.app" to 120),
@@ -104,6 +153,47 @@ class AppLockManagerDailyLimitTest {
             )
         )
         assertFalse(AppLockManager.shouldBypassLockByDailyLimit(store, "com.example.app", 10_000L))
+    }
+
+    @Test
+    fun `daily limit exhausted clears stale temporary unlock and grace timestamp`() {
+        val store = FakeDailyLimitStore(
+            dailyLimits = mutableMapOf("com.example.app" to 60),
+            dailyUsage = mutableMapOf("com.example.app" to 60)
+        )
+
+        AppLockManager.temporarilyUnlockedApp = "com.example.app"
+        AppLockManager.appUnlockTimes["com.example.app"] = 1234L
+
+        val result = AppLockManager.enforceDailyLimitForLockDecision(
+            store,
+            packageName = "com.example.app",
+            nowMillis = 10_000L
+        )
+
+        assertEquals(AppLockManager.DailyLimitEnforcementResult.LOCK_REQUIRED, result)
+        assertFalse(AppLockManager.isAppTemporarilyUnlocked("com.example.app"))
+        assertFalse(AppLockManager.appUnlockTimes.containsKey("com.example.app"))
+    }
+
+    @Test
+    fun `app with limit removed keeps normal unlock state and no longer uses daily policy`() {
+        val store = FakeDailyLimitStore(
+            dailyUsage = mutableMapOf("com.example.app" to 120)
+        )
+
+        AppLockManager.temporarilyUnlockedApp = "com.example.app"
+        AppLockManager.appUnlockTimes["com.example.app"] = 2222L
+
+        val result = AppLockManager.enforceDailyLimitForLockDecision(
+            store,
+            packageName = "com.example.app",
+            nowMillis = 10_000L
+        )
+
+        assertEquals(AppLockManager.DailyLimitEnforcementResult.NO_LIMIT_CONFIGURED, result)
+        assertTrue(AppLockManager.isAppTemporarilyUnlocked("com.example.app"))
+        assertTrue(AppLockManager.appUnlockTimes.containsKey("com.example.app"))
     }
 
     @Test
