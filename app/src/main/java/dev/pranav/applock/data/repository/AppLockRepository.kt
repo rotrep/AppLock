@@ -40,6 +40,35 @@ class AppLockRepository(private val context: Context) {
     fun isAppAntiUninstall(packageName: String): Boolean =
         lockedAppsRepository.isAppAntiUninstall(packageName)
 
+    fun setDailyLimit(packageName: String, limitSeconds: Int) =
+        lockedAppsRepository.setDailyLimit(packageName, limitSeconds)
+
+    fun removeDailyLimit(packageName: String) = lockedAppsRepository.removeDailyLimit(packageName)
+
+    fun hasDailyLimit(packageName: String): Boolean = lockedAppsRepository.hasDailyLimit(packageName)
+
+    fun getDailyLimit(packageName: String): Int? = lockedAppsRepository.getDailyLimit(packageName)
+
+    fun getAllDailyLimits(): Map<String, Int> = lockedAppsRepository.getAllDailyLimits()
+
+    fun getUsedSecondsForToday(packageName: String): Int =
+        lockedAppsRepository.getUsedSecondsForToday(packageName)
+
+    fun setUsedSecondsForToday(packageName: String, usedSeconds: Int) =
+        lockedAppsRepository.setUsedSecondsForToday(packageName, usedSeconds)
+
+    fun incrementUsedSecondsForToday(packageName: String, additionalSeconds: Int): Int =
+        lockedAppsRepository.incrementUsedSecondsForToday(packageName, additionalSeconds)
+
+    fun getAllUsedSecondsForToday(): Map<String, Int> =
+        lockedAppsRepository.getAllUsedSecondsForToday()
+
+    fun getStoredUsageDayId(): Int = lockedAppsRepository.getStoredUsageDayId()
+
+    fun resetUsageIfDayChanged(): Boolean = lockedAppsRepository.resetUsageIfDayChanged()
+
+    fun resetDailyUsageForToday() = lockedAppsRepository.resetDailyUsageForToday()
+
     fun getPassword(): String? = preferencesRepository.getPassword()
     fun setPassword(password: String) = preferencesRepository.setPassword(password)
     fun validatePassword(inputPassword: String): Boolean =
