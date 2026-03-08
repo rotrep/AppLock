@@ -793,19 +793,12 @@ private fun DailyLimitDialog(
     var appName by remember(appInfo) { mutableStateOf(appInfo.packageName) }
     var enabled by remember(initialLimitSeconds) { mutableStateOf(initialLimitSeconds != null) }
     val durationOptions = remember {
-        listOf(
-            15 * 60,
-            30 * 60,
-            45 * 60,
-            60 * 60,
-            90 * 60,
-            2 * 60 * 60,
-            3 * 60 * 60,
-            4 * 60 * 60
-        )
+        (MIN_DAILY_LIMIT_MINUTES..MAX_DAILY_LIMIT_MINUTES).map { minutes -> minutes * 60 }
     }
     var selectedSeconds by remember(initialLimitSeconds) {
-        mutableStateOf(initialLimitSeconds ?: 60 * 60)
+        mutableStateOf(
+            normalizeDailyLimitSelectionSeconds(initialLimitSeconds ?: DEFAULT_DAILY_LIMIT_SECONDS)
+        )
     }
 
     LaunchedEffect(appInfo) {
@@ -879,7 +872,12 @@ private fun DailyLimitDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = { onSave(enabled, selectedSeconds) }) {
+            TextButton(
+                onClick = {
+                    val normalizedSelection = normalizeDailyLimitSelectionSeconds(selectedSeconds)
+                    onSave(enabled, normalizedSelection)
+                }
+            ) {
                 Text("Save")
             }
         },
@@ -890,6 +888,16 @@ private fun DailyLimitDialog(
         }
     )
 }
+
+private fun normalizeDailyLimitSelectionSeconds(seconds: Int): Int {
+    val minuteRoundedSeconds = ((seconds + 59) / 60) * 60
+    return minuteRoundedSeconds.coerceAtLeast(MIN_DAILY_LIMIT_SECONDS)
+}
+
+private const val MIN_DAILY_LIMIT_MINUTES = 1
+private const val MAX_DAILY_LIMIT_MINUTES = 240
+private const val MIN_DAILY_LIMIT_SECONDS = MIN_DAILY_LIMIT_MINUTES * 60
+private const val DEFAULT_DAILY_LIMIT_SECONDS = 60 * 60
 
 private fun formatDuration(totalSeconds: Int): String {
     val hours = totalSeconds / 3600
