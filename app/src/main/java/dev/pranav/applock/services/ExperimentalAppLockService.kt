@@ -51,6 +51,7 @@ class ExperimentalAppLockService : Service() {
                 )
                 AppLockManager.isLockScreenShown.set(false)
                 AppLockManager.clearTemporarilyUnlockedApp()
+                AppLockManager.pauseDailyLimitTracking(appLockRepository)
                 previousForegroundPackage = ""
             }
         }
@@ -96,6 +97,7 @@ class ExperimentalAppLockService : Service() {
         }
 
         AppLockManager.isLockScreenShown.set(false)
+        AppLockManager.pauseDailyLimitTracking(appLockRepository)
         notificationManager.cancel(NOTIFICATION_ID)
         super.onDestroy()
     }
@@ -120,6 +122,12 @@ class ExperimentalAppLockService : Service() {
             val currentPackage = foregroundApp.first
             val triggeringPackage = previousForegroundPackage
             previousForegroundPackage = currentPackage
+
+            AppLockManager.onForegroundAppTransition(
+                repository = appLockRepository,
+                previousPackage = triggeringPackage,
+                currentPackage = currentPackage
+            )
 
             if (isExclusionApp(currentPackage)) return@timerTask
 
@@ -172,6 +180,18 @@ class ExperimentalAppLockService : Service() {
     private fun checkAndLockApp(packageName: String, triggeringPackage: String, currentTime: Long) {
         val lockedApps = appLockRepository.getLockedApps()
         if (packageName !in lockedApps) return
+
+        if (AppLockManager.hasDailyLimitConfigured(appLockRepository, packageName)) {
+            if (AppLockManager.shouldBypassLockByDailyLimit(appLockRepository, packageName, currentTime)) {
+                LogUtils.d(TAG, "Daily-limit policy allows bypass for $packageName")
+                return
+            }
+
+            AppLockManager.appUnlockTimes.remove(packageName)
+            if (AppLockManager.isAppTemporarilyUnlocked(packageName)) {
+                AppLockManager.clearTemporarilyUnlockedApp()
+            }
+        }
 
         val unlockDurationMinutes = appLockRepository.getUnlockTimeDuration()
         val unlockTimestamp = AppLockManager.appUnlockTimes[packageName] ?: 0L
