@@ -88,6 +88,45 @@ class AppLockManagerDailyLimitTest {
         assertEquals(5, store.getUsedSecondsForToday("com.example.limited"))
     }
 
+    @Test
+    fun `bypass is false when daily limit is exhausted`() {
+        val store = FakeDailyLimitStore(
+            dailyLimits = mutableMapOf("com.example.app" to 120),
+            dailyUsage = mutableMapOf("com.example.app" to 120)
+        )
+
+        assertEquals(
+            0,
+            AppLockManager.getRemainingDailyLimitSeconds(
+                store,
+                "com.example.app",
+                nowMillis = 10_000L
+            )
+        )
+        assertFalse(AppLockManager.shouldBypassLockByDailyLimit(store, "com.example.app", 10_000L))
+    }
+
+    @Test
+    fun `foreground transition does not accrue for package without configured limit`() {
+        val store = FakeDailyLimitStore()
+
+        AppLockManager.onForegroundAppTransition(
+            store = store,
+            previousPackage = "",
+            currentPackage = "com.example.unlimited",
+            nowMillis = 1_000L
+        )
+
+        AppLockManager.onForegroundAppTransition(
+            store = store,
+            previousPackage = "com.example.unlimited",
+            currentPackage = "com.example.other",
+            nowMillis = 6_000L
+        )
+
+        assertEquals(0, store.getUsedSecondsForToday("com.example.unlimited"))
+    }
+
     private class FakeDailyLimitStore(
         private val dailyLimits: MutableMap<String, Int> = mutableMapOf(),
         private val dailyUsage: MutableMap<String, Int> = mutableMapOf(),
