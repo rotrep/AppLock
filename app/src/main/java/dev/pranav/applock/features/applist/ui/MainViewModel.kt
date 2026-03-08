@@ -6,6 +6,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.pranav.applock.data.repository.AppLockRepository
 import dev.pranav.applock.features.applist.domain.AppSearchManager
+import dev.pranav.applock.services.AppLockManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.*
@@ -26,6 +27,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
 
     private val _lockedApps = MutableStateFlow<Set<String>>(emptySet())
+
+    private val _dailyLimits = MutableStateFlow<Map<String, Int>>(emptyMap())
+    val dailyLimits: StateFlow<Map<String, Int>> = _dailyLimits.asStateFlow()
+
+    private val _remainingDailyLimits = MutableStateFlow<Map<String, Int>>(emptyMap())
+    val remainingDailyLimits: StateFlow<Map<String, Int>> = _remainingDailyLimits.asStateFlow()
 
     private val _debouncedQuery = MutableStateFlow("")
 
@@ -89,15 +96,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun loadLockedApps() {
         _lockedApps.value = appLockRepository.getLockedApps()
+        refreshDailyLimitState()
     }
 
     fun lockApps(packageNames: List<String>) {
         appLockRepository.addMultipleLockedApps(packageNames.toSet())
         _lockedApps.value = appLockRepository.getLockedApps()
+        refreshDailyLimitState()
     }
 
     fun unlockApp(packageName: String) {
         appLockRepository.removeLockedApp(packageName)
         _lockedApps.value = appLockRepository.getLockedApps()
+        refreshDailyLimitState()
+    }
+
+    fun setDailyLimit(packageName: String, limitSeconds: Int) {
+        appLockRepository.setDailyLimit(packageName, limitSeconds)
+        refreshDailyLimitState()
+    }
+
+    fun disableDailyLimit(packageName: String) {
+        appLockRepository.removeDailyLimit(packageName)
+        refreshDailyLimitState()
+    }
+
+    fun refreshDailyLimitState() {
+        val lockedApps = _lockedApps.value
+        val limits = appLockRepository.getAllDailyLimits().filterKeys { it in lockedApps }
+        _dailyLimits.value = limits
+        _remainingDailyLimits.value = limits.mapValues { (packageName, _) ->
+            AppLockManager.getRemainingDailyLimitSeconds(appLockRepository, packageName) ?: 0
+        }
     }
 }

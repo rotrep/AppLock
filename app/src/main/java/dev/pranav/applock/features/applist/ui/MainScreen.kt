@@ -18,6 +18,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.Lock
+import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.LockOpen
 import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material.icons.rounded.Forum
@@ -36,6 +37,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.net.toUri
 import androidx.lifecycle.Lifecycle
@@ -72,8 +74,11 @@ fun MainScreen(
     val isLoading by mainViewModel.isLoading.collectAsState()
     val lockedApps by mainViewModel.lockedAppsFlow.collectAsState()
     val unlockedApps by mainViewModel.unlockedAppsFlow.collectAsState()
+    val dailyLimits by mainViewModel.dailyLimits.collectAsState()
+    val remainingDailyLimits by mainViewModel.remainingDailyLimits.collectAsState()
 
     var showAddAppsSheet by remember { mutableStateOf(false) }
+    var selectedAppForDailyLimit by remember { mutableStateOf<ApplicationInfo?>(null) }
 
     var applockEnabled by remember { mutableStateOf(true) }
 
@@ -88,6 +93,7 @@ fun MainScreen(
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
+                mainViewModel.refreshDailyLimitState()
                 val appLockRepository = context.appLockRepository()
                 val backend = appLockRepository.getBackendImplementation()
                 val isAntiUninstallEnabled = appLockRepository.isAntiUninstallEnabled()
@@ -319,12 +325,33 @@ fun MainScreen(
                         .fillMaxWidth()
                         .weight(1f),
                     lockedApps = lockedApps,
+                    dailyLimits = dailyLimits,
+                    remainingDailyLimits = remainingDailyLimits,
                     onUnlockApp = { appInfo ->
                         mainViewModel.unlockApp(appInfo.packageName)
+                    },
+                    onConfigureDailyLimit = { appInfo ->
+                        selectedAppForDailyLimit = appInfo
                     }
                 )
             }
         }
+    }
+
+    selectedAppForDailyLimit?.let { appInfo ->
+        DailyLimitDialog(
+            appInfo = appInfo,
+            initialLimitSeconds = dailyLimits[appInfo.packageName],
+            onDismiss = { selectedAppForDailyLimit = null },
+            onSave = { enabled, selectedSeconds ->
+                if (enabled) {
+                    mainViewModel.setDailyLimit(appInfo.packageName, selectedSeconds)
+                } else {
+                    mainViewModel.disableDailyLimit(appInfo.packageName)
+                }
+                selectedAppForDailyLimit = null
+            }
+        )
     }
 
     if (showAddAppsSheet) {
@@ -394,7 +421,10 @@ private fun LoadingContent(modifier: Modifier = Modifier) {
 private fun ProtectedAppsDashboard(
     modifier: Modifier = Modifier,
     lockedApps: List<ApplicationInfo>,
-    onUnlockApp: (ApplicationInfo) -> Unit
+    dailyLimits: Map<String, Int>,
+    remainingDailyLimits: Map<String, Int>,
+    onUnlockApp: (ApplicationInfo) -> Unit,
+    onConfigureDailyLimit: (ApplicationInfo) -> Unit
 ) {
     if (lockedApps.isEmpty()) {
         EmptyDashboardState(modifier = modifier)
@@ -407,7 +437,10 @@ private fun ProtectedAppsDashboard(
             items(lockedApps, key = { it.packageName }) { appInfo ->
                 ProtectedAppItem(
                     appInfo = appInfo,
-                    onUnlock = { onUnlockApp(appInfo) }
+                    dailyLimitSeconds = dailyLimits[appInfo.packageName],
+                    remainingSeconds = remainingDailyLimits[appInfo.packageName],
+                    onUnlock = { onUnlockApp(appInfo) },
+                    onConfigureDailyLimit = { onConfigureDailyLimit(appInfo) }
                 )
             }
         }
@@ -438,7 +471,7 @@ private fun EmptyDashboardState(modifier: Modifier = Modifier) {
             text = "Tap the + button to selectively secure your apps.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            textAlign = TextAlign.Center,
             modifier = Modifier.padding(horizontal = 32.dp)
         )
     }
@@ -562,7 +595,10 @@ private fun AddProtectedAppsSheetContent(
 @Composable
 private fun ProtectedAppItem(
     appInfo: ApplicationInfo,
-    onUnlock: () -> Unit
+    dailyLimitSeconds: Int?,
+    remainingSeconds: Int?,
+    onUnlock: () -> Unit,
+    onConfigureDailyLimit: () -> Unit
 ) {
     val context = LocalContext.current
 
@@ -589,13 +625,35 @@ private fun ProtectedAppItem(
             }
         },
         supportingContent = {
-            Text(
-                text = "Protected",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.primary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+            val limitSummary = dailyLimitSeconds?.let { "Limit: ${formatDuration(it)}" }
+            val remainingSummary = remainingSeconds?.let { "Remaining today: ${formatDuration(it)}" }
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = "Protected",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                limitSummary?.let {
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                remainingSummary?.let {
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
         },
         leadingContent = {
             Surface(
@@ -618,12 +676,21 @@ private fun ProtectedAppItem(
             }
         },
         trailingContent = {
-            IconButton(onClick = onUnlock) {
-                Icon(
-                    imageVector = Icons.Outlined.LockOpen,
-                    contentDescription = "Unlock ${appName ?: "app"}",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onConfigureDailyLimit) {
+                    Icon(
+                        imageVector = Icons.Outlined.Edit,
+                        contentDescription = "Configure daily limit for ${appName ?: "app"}",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                IconButton(onClick = onUnlock) {
+                    Icon(
+                        imageVector = Icons.Outlined.LockOpen,
+                        contentDescription = "Unlock ${appName ?: "app"}",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         },
         colors = ListItemDefaults.colors(
@@ -712,6 +779,126 @@ private fun SelectableAppItem(
             .clip(RoundedCornerShape(16.dp))
             .clickable(onClick = onClick)
     )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun DailyLimitDialog(
+    appInfo: ApplicationInfo,
+    initialLimitSeconds: Int?,
+    onDismiss: () -> Unit,
+    onSave: (enabled: Boolean, selectedSeconds: Int) -> Unit
+) {
+    val context = LocalContext.current
+    var appName by remember(appInfo) { mutableStateOf(appInfo.packageName) }
+    var enabled by remember(initialLimitSeconds) { mutableStateOf(initialLimitSeconds != null) }
+    val durationOptions = remember {
+        listOf(
+            15 * 60,
+            30 * 60,
+            45 * 60,
+            60 * 60,
+            90 * 60,
+            2 * 60 * 60,
+            3 * 60 * 60,
+            4 * 60 * 60
+        )
+    }
+    var selectedSeconds by remember(initialLimitSeconds) {
+        mutableStateOf(initialLimitSeconds ?: 60 * 60)
+    }
+
+    LaunchedEffect(appInfo) {
+        withContext(Dispatchers.IO) {
+            appName = AppIconCache.getLabel(context, appInfo)
+        }
+    }
+
+    var isDurationDropdownExpanded by remember { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text("Daily limit")
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    text = appName,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Enable daily usage limit")
+                    Switch(
+                        checked = enabled,
+                        onCheckedChange = { enabled = it }
+                    )
+                }
+                ExposedDropdownMenuBox(
+                    expanded = isDurationDropdownExpanded,
+                    onExpandedChange = {
+                        if (enabled) {
+                            isDurationDropdownExpanded = !isDurationDropdownExpanded
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    OutlinedTextField(
+                        value = formatDuration(selectedSeconds),
+                        onValueChange = {},
+                        readOnly = true,
+                        enabled = enabled,
+                        label = { Text("Allowed per day") },
+                        trailingIcon = {
+                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = isDurationDropdownExpanded)
+                        },
+                        modifier = Modifier
+                            .menuAnchor()
+                            .fillMaxWidth()
+                    )
+                    ExposedDropdownMenu(
+                        expanded = isDurationDropdownExpanded,
+                        onDismissRequest = { isDurationDropdownExpanded = false }
+                    ) {
+                        durationOptions.forEach { option ->
+                            DropdownMenuItem(
+                                text = { Text(formatDuration(option)) },
+                                onClick = {
+                                    selectedSeconds = option
+                                    isDurationDropdownExpanded = false
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onSave(enabled, selectedSeconds) }) {
+                Text("Save")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
+}
+
+private fun formatDuration(totalSeconds: Int): String {
+    val hours = totalSeconds / 3600
+    val minutes = (totalSeconds % 3600) / 60
+    return when {
+        hours > 0 && minutes > 0 -> "${hours}h ${minutes}m"
+        hours > 0 -> "${hours}h"
+        else -> "${minutes}m"
+    }
 }
 
 @Composable
