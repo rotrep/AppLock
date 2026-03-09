@@ -2,6 +2,7 @@ package dev.pranav.applock.data.repository
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.util.Log
 import androidx.core.content.edit
 import java.util.Calendar
 
@@ -173,12 +174,17 @@ class LockedAppsRepository(context: Context) {
     fun resetUsageIfDayChanged(): Boolean {
         val storedDayId = getStoredUsageDayId()
         val currentDayId = getCurrentLocalDayId()
+
+        Log.d(TAG, "resetUsageIfDayChanged: storedDayId=$storedDayId, currentDayId=$currentDayId")
+
         if (storedDayId == currentDayId) return false
 
         preferences.edit {
             putStringSet(KEY_DAILY_USAGE_SECONDS, emptySet())
             putInt(KEY_DAILY_USAGE_DAY_ID, currentDayId)
         }
+
+        Log.d(TAG, "Daily usage reset for new local day: $currentDayId")
         return true
     }
 
@@ -222,6 +228,7 @@ class LockedAppsRepository(context: Context) {
     }
 
     companion object {
+        private const val TAG = "LockedAppsRepository"
         private const val PREFS_NAME = "app_lock_prefs"
         private const val KEY_LOCKED_APPS = "locked_apps"
         private const val KEY_TRIGGER_EXCLUDED_APPS = "trigger_excluded_apps"

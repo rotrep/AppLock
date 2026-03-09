@@ -123,6 +123,11 @@ class ExperimentalAppLockService : Service() {
             val triggeringPackage = previousForegroundPackage
             previousForegroundPackage = currentPackage
 
+            LogUtils.d(
+                TAG,
+                "foregroundDetected: current=$currentPackage, previous=$triggeringPackage"
+            )
+
             AppLockManager.onForegroundAppTransition(
                 repository = appLockRepository,
                 previousPackage = triggeringPackage,
@@ -152,6 +157,15 @@ class ExperimentalAppLockService : Service() {
                 packageName in AppLockConstants.EXCLUDED_APPS
     }
 
+    private fun isUsageEventForegroundCandidate(packageName: String, className: String?): Boolean {
+        if (packageName.isBlank()) return false
+        if (packageName == this.packageName) return false
+        if (packageName in AppLockConstants.EXCLUDED_APPS) return false
+        if (className in AppLockConstants.KNOWN_RECENTS_CLASSES) return false
+        if (className == PasswordOverlayActivity::class.java.name) return false
+        return true
+    }
+
     /**
      * Returns the foreground package name and class name, or null if filtered.
      */
@@ -165,15 +179,21 @@ class ExperimentalAppLockService : Service() {
             events.getNextEvent(event)
 
             if (event.eventType != UsageEvents.Event.ACTIVITY_RESUMED) continue
-            if (event.className == "dev.pranav.applock.features.lockscreen.ui.PasswordOverlayActivity") continue
-
-            if (event.className in AppLockConstants.KNOWN_RECENTS_CLASSES
-            ) {
+            if (!isUsageEventForegroundCandidate(event.packageName, event.className)) {
+                LogUtils.d(
+                    TAG,
+                    "usageEventIgnored: package=${event.packageName}, class=${event.className}"
+                )
                 continue
             }
 
             recentApp = Pair(event.packageName, event.className)
         }
+
+        if (recentApp != null) {
+            LogUtils.d(TAG, "usageEventSelected: package=${recentApp.first}, class=${recentApp.second}")
+        }
+
         return recentApp
     }
 
@@ -181,7 +201,12 @@ class ExperimentalAppLockService : Service() {
         val lockedApps = appLockRepository.getLockedApps()
         if (packageName !in lockedApps) return
 
-        when (AppLockManager.enforceDailyLimitForLockDecision(appLockRepository, packageName, currentTime)) {
+        val dailyLimitResult = AppLockManager.enforceDailyLimitForLockDecision(
+            appLockRepository,
+            packageName,
+            currentTime
+        )
+        when (dailyLimitResult) {
             AppLockManager.DailyLimitEnforcementResult.BYPASS_ALLOWED -> {
                 LogUtils.d(TAG, "Daily-limit policy allows bypass for $packageName")
                 return
@@ -190,6 +215,8 @@ class ExperimentalAppLockService : Service() {
             AppLockManager.DailyLimitEnforcementResult.LOCK_REQUIRED,
             AppLockManager.DailyLimitEnforcementResult.NO_LIMIT_CONFIGURED -> Unit
         }
+
+        LogUtils.d(TAG, "Daily-limit policy requires lock for $packageName (result=$dailyLimitResult)")
 
         val unlockDurationMinutes = appLockRepository.getUnlockTimeDuration()
         val unlockTimestamp = AppLockManager.appUnlockTimes[packageName] ?: 0L
