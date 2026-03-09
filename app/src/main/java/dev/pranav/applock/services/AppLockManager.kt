@@ -159,9 +159,20 @@ object AppLockManager {
         ensureDailyUsageIsFresh(store, nowMillis)
         accrueTrackedForegroundUsage(store, nowMillis)
 
+        val normalizedPreviousPackage = previousPackage?.takeIf { it.isNotBlank() }
+        LogUtils.d(
+            TAG,
+            "onForegroundAppTransition: previous=$normalizedPreviousPackage, current=$currentPackage, tracked=$trackedForegroundPackageForDailyLimit"
+        )
+
         val normalizedCurrentPackage = currentPackage?.takeIf { it.isNotBlank() }
         if (normalizedCurrentPackage == null) {
             clearTrackedForegroundDailyLimitState()
+            return
+        }
+
+        if (normalizedCurrentPackage == trackedForegroundPackageForDailyLimit) {
+            // Keep current tracking window active for continuous foreground usage.
             return
         }
 
@@ -255,6 +266,11 @@ object AppLockManager {
 
         val remaining = getRemainingDailyLimitSeconds(store, packageName, nowMillis)
             ?: return DailyLimitEnforcementResult.NO_LIMIT_CONFIGURED
+
+        LogUtils.d(
+            TAG,
+            "enforceDailyLimitForLockDecision: package=$packageName, remainingSeconds=$remaining, tracked=$trackedForegroundPackageForDailyLimit"
+        )
 
         if (remaining > 0) return DailyLimitEnforcementResult.BYPASS_ALLOWED
 
@@ -435,6 +451,10 @@ object AppLockManager {
 
     private fun ensureDailyUsageIsFresh(store: DailyLimitPolicyStore, nowMillis: Long) {
         if (store.resetUsageIfDayChanged() && trackedForegroundPackageForDailyLimit.isNotBlank()) {
+            LogUtils.d(
+                TAG,
+                "Day changed while tracking $trackedForegroundPackageForDailyLimit. Resetting tracking start to now."
+            )
             trackedForegroundStartTimeMillis = nowMillis
         }
     }
@@ -447,7 +467,11 @@ object AppLockManager {
         val elapsedSeconds = ((nowMillis - trackingStart) / 1000L).toInt()
         if (elapsedSeconds <= 0) return
 
-        store.incrementUsedSecondsForToday(trackedPackage, elapsedSeconds)
+        val updatedUsage = store.incrementUsedSecondsForToday(trackedPackage, elapsedSeconds)
+        LogUtils.d(
+            TAG,
+            "accrueTrackedForegroundUsage: tracked=$trackedPackage, elapsedSeconds=$elapsedSeconds, usedSecondsPersisted=$updatedUsage"
+        )
         trackedForegroundStartTimeMillis = trackingStart + (elapsedSeconds * 1000L)
     }
 

@@ -249,6 +249,11 @@ class AppLockAccessibilityService : AccessibilityService() {
         val now = System.currentTimeMillis()
         lastForegroundPackage = currentForegroundPackage
 
+        LogUtils.d(
+            TAG,
+            "foregroundDetected: current=$currentForegroundPackage, previous=$triggeringPackage"
+        )
+
         AppLockManager.onForegroundAppTransition(
             repository = appLockRepository,
             previousPackage = triggeringPackage,
@@ -304,7 +309,12 @@ class AppLockAccessibilityService : AccessibilityService() {
             return
         }
 
-        when (AppLockManager.enforceDailyLimitForLockDecision(appLockRepository, packageName, currentTime)) {
+        val dailyLimitResult = AppLockManager.enforceDailyLimitForLockDecision(
+            appLockRepository,
+            packageName,
+            currentTime
+        )
+        when (dailyLimitResult) {
             AppLockManager.DailyLimitEnforcementResult.BYPASS_ALLOWED -> {
                 LogUtils.d(TAG, "Daily-limit policy allows bypass for $packageName")
                 return
@@ -313,6 +323,8 @@ class AppLockAccessibilityService : AccessibilityService() {
             AppLockManager.DailyLimitEnforcementResult.LOCK_REQUIRED,
             AppLockManager.DailyLimitEnforcementResult.NO_LIMIT_CONFIGURED -> Unit
         }
+
+        LogUtils.d(TAG, "Daily-limit policy requires lock for $packageName (result=$dailyLimitResult)")
 
         // Return if app is temporarily unlocked
         if (AppLockManager.isAppTemporarilyUnlocked(packageName)) {
