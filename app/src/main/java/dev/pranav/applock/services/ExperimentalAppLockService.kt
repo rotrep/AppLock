@@ -123,6 +123,11 @@ class ExperimentalAppLockService : Service() {
             val triggeringPackage = previousForegroundPackage
             previousForegroundPackage = currentPackage
 
+            LogUtils.d(
+                TAG,
+                "foregroundDetected: current=$currentPackage, previous=$triggeringPackage"
+            )
+
             AppLockManager.onForegroundAppTransition(
                 repository = appLockRepository,
                 previousPackage = triggeringPackage,
@@ -181,7 +186,12 @@ class ExperimentalAppLockService : Service() {
         val lockedApps = appLockRepository.getLockedApps()
         if (packageName !in lockedApps) return
 
-        when (AppLockManager.enforceDailyLimitForLockDecision(appLockRepository, packageName, currentTime)) {
+        val dailyLimitResult = AppLockManager.enforceDailyLimitForLockDecision(
+            appLockRepository,
+            packageName,
+            currentTime
+        )
+        when (dailyLimitResult) {
             AppLockManager.DailyLimitEnforcementResult.BYPASS_ALLOWED -> {
                 LogUtils.d(TAG, "Daily-limit policy allows bypass for $packageName")
                 return
@@ -190,6 +200,8 @@ class ExperimentalAppLockService : Service() {
             AppLockManager.DailyLimitEnforcementResult.LOCK_REQUIRED,
             AppLockManager.DailyLimitEnforcementResult.NO_LIMIT_CONFIGURED -> Unit
         }
+
+        LogUtils.d(TAG, "Daily-limit policy requires lock for $packageName (result=$dailyLimitResult)")
 
         val unlockDurationMinutes = appLockRepository.getUnlockTimeDuration()
         val unlockTimestamp = AppLockManager.appUnlockTimes[packageName] ?: 0L

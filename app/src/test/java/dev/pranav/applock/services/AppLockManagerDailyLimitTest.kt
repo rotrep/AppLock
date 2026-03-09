@@ -109,6 +109,21 @@ class AppLockManagerDailyLimitTest {
         assertEquals(5, store.getUsedSecondsForToday("com.example.limited"))
     }
 
+
+    @Test
+    fun `repeated callbacks for same foreground limited app continue accruing usage`() {
+        val store = FakeDailyLimitStore(
+            dailyLimits = mutableMapOf("com.example.limited" to 600)
+        )
+
+        AppLockManager.onForegroundAppTransition(store, "", "com.example.limited", 1_000L)
+        AppLockManager.onForegroundAppTransition(store, "com.example.limited", "com.example.limited", 2_000L)
+        AppLockManager.onForegroundAppTransition(store, "com.example.limited", "com.example.limited", 3_500L)
+        AppLockManager.onForegroundAppTransition(store, "com.example.limited", "com.example.other", 5_000L)
+
+        assertEquals(4, store.getUsedSecondsForToday("com.example.limited"))
+    }
+
     @Test
     fun `quick app switching accrues usage only while limited app is foreground`() {
         val store = FakeDailyLimitStore(
