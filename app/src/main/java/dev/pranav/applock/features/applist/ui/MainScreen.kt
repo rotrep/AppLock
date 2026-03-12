@@ -910,6 +910,125 @@ private fun formatDuration(totalSeconds: Int): String {
 }
 
 @Composable
+private fun DailyLimitDialog(
+    appInfo: ApplicationInfo,
+    initialLimitSeconds: Int?,
+    onDismiss: () -> Unit,
+    onSave: (enabled: Boolean, selectedSeconds: Int) -> Unit
+) {
+    val context = LocalContext.current
+    var appName by remember(appInfo) { mutableStateOf(appInfo.packageName) }
+    var enabled by remember(initialLimitSeconds) { mutableStateOf(initialLimitSeconds != null) }
+    val durationOptions = remember {
+        listOf(
+            15 * 60,
+            30 * 60,
+            45 * 60,
+            60 * 60,
+            90 * 60,
+            2 * 60 * 60,
+            3 * 60 * 60,
+            4 * 60 * 60
+        )
+    }
+    var selectedSeconds by remember(initialLimitSeconds) {
+        mutableStateOf(initialLimitSeconds ?: 60 * 60)
+    }
+
+    LaunchedEffect(appInfo) {
+        withContext(Dispatchers.IO) {
+            appName = AppIconCache.getLabel(context, appInfo)
+        }
+    }
+
+    var isDurationDropdownExpanded by remember { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text("Daily limit")
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    text = appName,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Enable daily usage limit")
+                    Switch(
+                        checked = enabled,
+                        onCheckedChange = { enabled = it }
+                    )
+                }
+                ExposedDropdownMenuBox(
+                    expanded = isDurationDropdownExpanded,
+                    onExpandedChange = {
+                        if (enabled) {
+                            isDurationDropdownExpanded = !isDurationDropdownExpanded
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    OutlinedTextField(
+                        value = formatDuration(selectedSeconds),
+                        onValueChange = {},
+                        readOnly = true,
+                        enabled = enabled,
+                        label = { Text("Allowed per day") },
+                        trailingIcon = {
+                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = isDurationDropdownExpanded)
+                        },
+                        modifier = Modifier
+                            .menuAnchor()
+                            .fillMaxWidth()
+                    )
+                    ExposedDropdownMenu(
+                        expanded = isDurationDropdownExpanded,
+                        onDismissRequest = { isDurationDropdownExpanded = false }
+                    ) {
+                        durationOptions.forEach { option ->
+                            DropdownMenuItem(
+                                text = { Text(formatDuration(option)) },
+                                onClick = {
+                                    selectedSeconds = option
+                                    isDurationDropdownExpanded = false
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onSave(enabled, selectedSeconds) }) {
+                Text("Save")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
+}
+
+private fun formatDuration(totalSeconds: Int): String {
+    val hours = totalSeconds / 3600
+    val minutes = (totalSeconds % 3600) / 60
+    return when {
+        hours > 0 && minutes > 0 -> "${hours}h ${minutes}m"
+        hours > 0 -> "${hours}h"
+        else -> "${minutes}m"
+    }
+}
+
+@Composable
 private fun CommunityDialog(
     onDismiss: () -> Unit,
     onJoin: () -> Unit
